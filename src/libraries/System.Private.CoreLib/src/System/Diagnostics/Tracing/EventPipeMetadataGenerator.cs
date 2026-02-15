@@ -435,6 +435,44 @@ namespace System.Diagnostics.Tracing
                     EventPipeMetadataGenerator.WriteToBuffer(pMetadataBlob, blobSize, ref offset, (uint)0);
                 }
             }
+            else if (typeInfo is DateTimeOffsetTypeInfo)
+            {
+                // DateTimeOffset is serialized as a struct with two Int64 fields: Ticks (as FileTime) and Offset.
+                EventPipeMetadataGenerator.WriteToBuffer(pMetadataBlob, blobSize, ref offset, (uint)TypeCode.Object);
+                EventPipeMetadataGenerator.WriteToBuffer(pMetadataBlob, blobSize, ref offset, (uint)2);
+                if (!GenerateMetadataForNamedTypeV2("Ticks", ScalarTypeInfo.Int64(), pMetadataBlob, ref offset, blobSize))
+                    return false;
+                if (!GenerateMetadataForNamedTypeV2("Offset", ScalarTypeInfo.Int64(), pMetadataBlob, ref offset, blobSize))
+                    return false;
+            }
+            else if (typeInfo is TimeSpanTypeInfo)
+            {
+                // TimeSpan is serialized as Int64 ticks.
+                EventPipeMetadataGenerator.WriteToBuffer(pMetadataBlob, blobSize, ref offset, (uint)TypeCode.Int64);
+            }
+            else if (typeInfo is DecimalTypeInfo)
+            {
+                // Decimal is serialized as Double (not full-fidelity, matching WriteData behavior).
+                EventPipeMetadataGenerator.WriteToBuffer(pMetadataBlob, blobSize, ref offset, (uint)TypeCode.Double);
+            }
+            else if (typeInfo is NullableTypeInfo)
+            {
+                // Nullable<T> is serialized as a struct with HasValue (Boolean8=UInt8) and Value.
+                EventPipeMetadataGenerator.WriteToBuffer(pMetadataBlob, blobSize, ref offset, (uint)TypeCode.Object);
+                EventPipeMetadataGenerator.WriteToBuffer(pMetadataBlob, blobSize, ref offset, (uint)2);
+                if (!GenerateMetadataForNamedTypeV2("HasValue", ScalarTypeInfo.Boolean(), pMetadataBlob, ref offset, blobSize))
+                    return false;
+
+                // Get the inner type info from the Nullable<T>'s generic argument.
+                Type nullableUnderlyingType = Nullable.GetUnderlyingType(typeInfo.DataType)!;
+                if (!GetTypeInfoFromType(nullableUnderlyingType, out TraceLoggingTypeInfo? valueTypeInfo) || valueTypeInfo == null)
+                {
+                    return false;
+                }
+
+                if (!GenerateMetadataForNamedTypeV2("Value", valueTypeInfo, pMetadataBlob, ref offset, blobSize))
+                    return false;
+            }
             else if (typeInfo is EnumerableTypeInfo enumerableTypeInfo)
             {
                 // Each enumerable is serialized as:
@@ -443,9 +481,28 @@ namespace System.Diagnostics.Tracing
                 EventPipeMetadataGenerator.WriteToBuffer(pMetadataBlob, blobSize, ref offset, EventPipeTypeCodeArray);
                 GenerateMetadataForTypeV2(enumerableTypeInfo.ElementInfo, pMetadataBlob, ref offset, blobSize);
             }
-            else if (typeInfo is ScalarArrayTypeInfo arrayTypeInfo)
+            else if (typeInfo is ScalarArrayTypeInfo scalarArrayTypeInfo)
             {
-                // Each enumerable is serialized as:
+                // Each scalar array is serialized as:
+                //     TypeCode.Array               : 4 bytes
+                //     ElementType                  : N bytes
+                if (!scalarArrayTypeInfo.DataType.HasElementType)
+                {
+                    return false;
+                }
+
+                TraceLoggingTypeInfo? elementTypeInfo;
+                if (!GetTypeInfoFromType(scalarArrayTypeInfo.DataType.GetElementType(), out elementTypeInfo))
+                {
+                    return false;
+                }
+
+                EventPipeMetadataGenerator.WriteToBuffer(pMetadataBlob, blobSize, ref offset, EventPipeTypeCodeArray);
+                GenerateMetadataForTypeV2(elementTypeInfo, pMetadataBlob, ref offset, blobSize);
+            }
+            else if (typeInfo is ArrayTypeInfo arrayTypeInfo)
+            {
+                // Non-scalar arrays are serialized as:
                 //     TypeCode.Array               : 4 bytes
                 //     ElementType                  : N bytes
                 if (!arrayTypeInfo.DataType.HasElementType)
@@ -453,9 +510,11 @@ namespace System.Diagnostics.Tracing
                     return false;
                 }
 
-                TraceLoggingTypeInfo? elementTypeInfo;
-                if (!GetTypeInfoFromType(arrayTypeInfo.DataType.GetElementType(), out elementTypeInfo))
+                Type elementType = arrayTypeInfo.DataType.GetElementType()!;
+                EventParameterInfo.GetTypeInfoFromType(elementType, out TraceLoggingTypeInfo? elementTypeInfo);
+                if (elementTypeInfo == null)
                 {
+                    // Element may be a complex type — try to use InvokeTypeInfo via Statics
                     return false;
                 }
 
@@ -467,6 +526,13 @@ namespace System.Diagnostics.Tracing
                 // Each primitive type is serialized as:
                 //     TypeCode : 4 bytes
                 TypeCode typeCode = GetTypeCodeExtended(typeInfo.DataType);
+
+                // Boolean is serialized as 1 byte (Boolean8) in the TraceLogging path,
+                // but TypeCode.Boolean implies 4 bytes. Use TypeCode.Byte to match the 1-byte serialization.
+                if (typeCode == TypeCode.Boolean)
+                {
+                    typeCode = TypeCode.Byte;
+                }
 
                 // EventPipe does not support this type.  Throw, which will cause no metadata to be registered for this event.
                 if (typeCode == TypeCode.Object)
@@ -704,6 +770,48 @@ namespace System.Diagnostics.Tracing
                     }
                 }
             }
+            else if (typeInfo is DateTimeOffsetTypeInfo)
+            {
+                // DateTimeOffset is serialized as struct { Int64 Ticks, Int64 Offset }
+                size += sizeof(uint)  // TypeCode.Object
+                     + sizeof(uint);  // Property count (2)
+                // Two named Int64 fields
+                if (!GetMetadataLengthForNamedTypeV2("Ticks", ScalarTypeInfo.Int64(), out uint ticksSize))
+                    return false;
+                size += ticksSize;
+                if (!GetMetadataLengthForNamedTypeV2("Offset", ScalarTypeInfo.Int64(), out uint offsetSize))
+                    return false;
+                size += offsetSize;
+            }
+            else if (typeInfo is TimeSpanTypeInfo)
+            {
+                // TimeSpan is serialized as Int64 (ticks)
+                size += (uint)sizeof(uint);
+            }
+            else if (typeInfo is DecimalTypeInfo)
+            {
+                // Decimal is serialized as Double
+                size += (uint)sizeof(uint);
+            }
+            else if (typeInfo is NullableTypeInfo)
+            {
+                // Nullable<T> is serialized as struct { Boolean8 HasValue, T Value }
+                size += sizeof(uint)  // TypeCode.Object
+                     + sizeof(uint);  // Property count (2)
+                if (!GetMetadataLengthForNamedTypeV2("HasValue", ScalarTypeInfo.Boolean(), out uint hasValueSize))
+                    return false;
+                size += hasValueSize;
+
+                Type nullableUnderlyingType = Nullable.GetUnderlyingType(typeInfo.DataType)!;
+                if (!GetTypeInfoFromType(nullableUnderlyingType, out TraceLoggingTypeInfo? valueTypeInfo) || valueTypeInfo == null)
+                {
+                    return false;
+                }
+
+                if (!GetMetadataLengthForNamedTypeV2("Value", valueTypeInfo, out uint valueSize))
+                    return false;
+                size += valueSize;
+            }
             else if (typeInfo is EnumerableTypeInfo enumerableTypeInfo)
             {
                 // IEnumerable<T> is serialized as:
@@ -717,11 +825,32 @@ namespace System.Diagnostics.Tracing
 
                 size += typeSize;
             }
-            else if (typeInfo is ScalarArrayTypeInfo arrayTypeInfo)
+            else if (typeInfo is ScalarArrayTypeInfo scalarArrayTypeInfo)
             {
                 TraceLoggingTypeInfo? elementTypeInfo;
-                if (!arrayTypeInfo.DataType.HasElementType
-                    || !GetTypeInfoFromType(arrayTypeInfo.DataType.GetElementType(), out elementTypeInfo))
+                if (!scalarArrayTypeInfo.DataType.HasElementType
+                    || !GetTypeInfoFromType(scalarArrayTypeInfo.DataType.GetElementType(), out elementTypeInfo))
+                {
+                    return false;
+                }
+
+                size += sizeof(uint);
+                if (!GetMetadataLengthForTypeV2(elementTypeInfo, out uint typeSize))
+                {
+                    return false;
+                }
+
+                size += typeSize;
+            }
+            else if (typeInfo is ArrayTypeInfo arrayTypeInfo)
+            {
+                if (!arrayTypeInfo.DataType.HasElementType)
+                {
+                    return false;
+                }
+
+                Type elementType = arrayTypeInfo.DataType.GetElementType()!;
+                if (!GetTypeInfoFromType(elementType, out TraceLoggingTypeInfo? elementTypeInfo) || elementTypeInfo == null)
                 {
                     return false;
                 }
