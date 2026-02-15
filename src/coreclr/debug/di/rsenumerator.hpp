@@ -214,6 +214,11 @@ HRESULT CordbEnumerator<ElemType,
             new CordbEnumerator<ElemType, ElemPublicType, EnumInterfaceType, IID_EnumInterfaceType, GetPublicType>(
                 GetProcess(), m_items, m_countItems);
         clone->QueryInterface(__uuidof(ICorDebugEnum), (void**)ppEnum);
+
+        // Add the cloned enumerator to the neuter list so its resources are
+        // freed when the process continues. Without this, the clone's m_items
+        // array is never released because Neuter() is never called on it.
+        GetProcess()->GetContinueNeuterList()->Add(GetProcess(), clone);
     }
     EX_CATCH_HRESULT(hr)
     {
