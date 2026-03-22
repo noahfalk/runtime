@@ -5,47 +5,49 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using Microsoft.Diagnostics.DataContractReader;
 using Microsoft.Diagnostics.DataContractReader.Contracts;
 using Microsoft.Diagnostics.DataContractReader.Legacy;
-using Moq;
 using Xunit;
 
 namespace Microsoft.Diagnostics.DataContractReader.Tests;
 
-using MockLoader = Microsoft.Diagnostics.Internal.RuntimeMemoryMocks.MockDescriptors.Loader;
 using Microsoft.Diagnostics.Internal.RuntimeMemoryMocks;
 
 public unsafe class LoaderTests
 {
+    private static ILoader CreateLoaderContract(
+        MockTarget.Architecture arch,
+        Action<MockLoaderBuilder> configure)
+    {
+        MockProcess process = new MockProcessBuilder(arch)
+            .AddLoader(configure)
+            .Build();
+
+        return process.CreateContractDescriptorTarget().Contracts.Loader;
+    }
+
     [Theory]
     [ClassData(typeof(MockTarget.StdArch))]
     public void GetPath(MockTarget.Architecture arch)
     {
-        // Set up the target
-        TargetTestHelpers helpers = new(arch);
-        MockMemorySpace.Builder builder = new(helpers);
-        MockLoader loader = new(builder);
-
         string expected = $"{AppContext.BaseDirectory}{Path.DirectorySeparatorChar}TestModule.dll";
+        ulong moduleAddr = 0;
+        ulong moduleAddrEmptyPath = 0;
+        ILoader contract = CreateLoaderContract(arch, loader =>
+        {
+            moduleAddr = loader.AddModule(path: expected);
+            moduleAddrEmptyPath = loader.AddModule();
+        });
 
-        // Add the modules
-        TargetPointer moduleAddr = loader.AddModule(path: expected);
-        TargetPointer moduleAddrEmptyPath = loader.AddModule();
-
-        var target = new TestPlaceholderTarget(arch, builder.GetMemoryContext().ReadFromTarget, loader.Types);
-        target.SetContracts(Mock.Of<ContractRegistry>(
-            c => c.Loader == ((IContractFactory<ILoader>)new LoaderFactory()).CreateContract(target, 1)));
-
-        // Validate the expected module data
-        ILoader contract = target.Contracts.Loader;
         Assert.NotNull(contract);
         {
-            Contracts.ModuleHandle handle = contract.GetModuleHandleFromModulePtr(moduleAddr);
+            Contracts.ModuleHandle handle = contract.GetModuleHandleFromModulePtr(new TargetPointer(moduleAddr));
             string actual = contract.GetPath(handle);
             Assert.Equal(expected, actual);
         }
         {
-            Contracts.ModuleHandle handle = contract.GetModuleHandleFromModulePtr(moduleAddrEmptyPath);
+            Contracts.ModuleHandle handle = contract.GetModuleHandleFromModulePtr(new TargetPointer(moduleAddrEmptyPath));
             string actual = contract.GetFileName(handle);
             Assert.Equal(string.Empty, actual);
         }
@@ -55,31 +57,23 @@ public unsafe class LoaderTests
     [ClassData(typeof(MockTarget.StdArch))]
     public void GetFileName(MockTarget.Architecture arch)
     {
-        // Set up the target
-        TargetTestHelpers helpers = new(arch);
-        MockMemorySpace.Builder builder = new(helpers);
-        MockLoader loader = new(builder);
-
         string expected = $"TestModule.dll";
+        ulong moduleAddr = 0;
+        ulong moduleAddrEmptyName = 0;
+        ILoader contract = CreateLoaderContract(arch, loader =>
+        {
+            moduleAddr = loader.AddModule(fileName: expected);
+            moduleAddrEmptyName = loader.AddModule();
+        });
 
-        // Add the modules
-        TargetPointer moduleAddr = loader.AddModule(fileName: expected);
-        TargetPointer moduleAddrEmptyName = loader.AddModule();
-
-        var target = new TestPlaceholderTarget(arch, builder.GetMemoryContext().ReadFromTarget, loader.Types);
-        target.SetContracts(Mock.Of<ContractRegistry>(
-            c => c.Loader == ((IContractFactory<ILoader>)new LoaderFactory()).CreateContract(target, 1)));
-
-        // Validate the expected module data
-        Contracts.ILoader contract = target.Contracts.Loader;
         Assert.NotNull(contract);
         {
-            Contracts.ModuleHandle handle = contract.GetModuleHandleFromModulePtr(moduleAddr);
+            Contracts.ModuleHandle handle = contract.GetModuleHandleFromModulePtr(new TargetPointer(moduleAddr));
             string actual = contract.GetFileName(handle);
             Assert.Equal(expected, actual);
         }
         {
-            Contracts.ModuleHandle handle = contract.GetModuleHandleFromModulePtr(moduleAddrEmptyName);
+            Contracts.ModuleHandle handle = contract.GetModuleHandleFromModulePtr(new TargetPointer(moduleAddrEmptyName));
             string actual = contract.GetFileName(handle);
             Assert.Equal(string.Empty, actual);
         }
@@ -98,51 +92,36 @@ public unsafe class LoaderTests
         ["CacheEntryHeap"] = new(0x9000),
     };
 
-    private static SOSDacImpl CreateSOSDacImplForHeapTests(MockTarget.Architecture arch)
+    private static (SOSDacImpl Impl, ClrDataAddress LoaderAllocatorAddress) CreateSOSDacImplForHeapTests(MockTarget.Architecture arch)
     {
-        TargetTestHelpers helpers = new(arch);
-        MockMemorySpace.Builder builder = new(helpers);
-        MockLoader loader = new(builder);
-        var types = new Dictionary<DataType, Target.TypeInfo>(loader.Types);
-
-        // Register LoaderAllocator and VirtualCallStubManager type infos so that
-        // GetCanonicalHeapNameEntries() can determine which heap names exist.
-        var dummyField = new Target.FieldInfo { Offset = 0 };
-        types[DataType.LoaderAllocator] = new Target.TypeInfo
-        {
-            Fields = new Dictionary<string, Target.FieldInfo>
+        ulong loaderAllocatorAddress = 0;
+        MockProcess process = new MockProcessBuilder(arch)
+            .AddLoader(loader =>
             {
-                ["LowFrequencyHeap"] = dummyField,
-                ["HighFrequencyHeap"] = dummyField,
-                ["StaticsHeap"] = dummyField,
-                ["StubHeap"] = dummyField,
-                ["ExecutableHeap"] = dummyField,
-                ["FixupPrecodeHeap"] = dummyField,
-                ["NewStubPrecodeHeap"] = dummyField,
-            }
-        };
-        types[DataType.VirtualCallStubManager] = new Target.TypeInfo
-        {
-            Fields = new Dictionary<string, Target.FieldInfo>
-            {
-                ["IndcellHeap"] = dummyField,
-                ["CacheEntryHeap"] = dummyField,
-            }
-        };
+                loaderAllocatorAddress = loader.SetGlobalLoaderAllocatorHeaps(new Dictionary<string, ulong>
+                {
+                    ["LowFrequencyHeap"] = MockHeapDictionary["LowFrequencyHeap"],
+                    ["HighFrequencyHeap"] = MockHeapDictionary["HighFrequencyHeap"],
+                    ["StaticsHeap"] = MockHeapDictionary["StaticsHeap"],
+                    ["StubHeap"] = MockHeapDictionary["StubHeap"],
+                    ["ExecutableHeap"] = MockHeapDictionary["ExecutableHeap"],
+                    ["FixupPrecodeHeap"] = MockHeapDictionary["FixupPrecodeHeap"],
+                    ["NewStubPrecodeHeap"] = MockHeapDictionary["NewStubPrecodeHeap"],
+                    ["IndcellHeap"] = MockHeapDictionary["IndcellHeap"],
+                    ["CacheEntryHeap"] = MockHeapDictionary["CacheEntryHeap"],
+                });
+            })
+            .Build();
 
-        var target = new TestPlaceholderTarget(arch, builder.GetMemoryContext().ReadFromTarget, types);
-        target.SetContracts(Mock.Of<ContractRegistry>(
-            c => c.Loader == Mock.Of<ILoader>(
-                l => l.GetLoaderAllocatorHeaps(It.IsAny<TargetPointer>()) == (IReadOnlyDictionary<string, TargetPointer>)MockHeapDictionary
-                && l.GetGlobalLoaderAllocator() == new TargetPointer(0x100))));
-        return new SOSDacImpl(target, null);
+        Target target = process.CreateContractDescriptorTarget();
+        return (new SOSDacImpl(target, null), new ClrDataAddress(loaderAllocatorAddress));
     }
 
     [Theory]
     [ClassData(typeof(MockTarget.StdArch))]
     public void GetLoaderAllocatorHeapNames_GetCount(MockTarget.Architecture arch)
     {
-        ISOSDacInterface13 impl = CreateSOSDacImplForHeapTests(arch);
+        (ISOSDacInterface13 impl, _) = CreateSOSDacImplForHeapTests(arch);
 
         int needed;
         int hr = impl.GetLoaderAllocatorHeapNames(0, null, &needed);
@@ -155,7 +134,7 @@ public unsafe class LoaderTests
     [ClassData(typeof(MockTarget.StdArch))]
     public void GetLoaderAllocatorHeapNames_GetNames(MockTarget.Architecture arch)
     {
-        ISOSDacInterface13 impl = CreateSOSDacImplForHeapTests(arch);
+        (ISOSDacInterface13 impl, _) = CreateSOSDacImplForHeapTests(arch);
 
         int needed;
         int hr = impl.GetLoaderAllocatorHeapNames(0, null, &needed);
@@ -178,7 +157,7 @@ public unsafe class LoaderTests
     [ClassData(typeof(MockTarget.StdArch))]
     public void GetLoaderAllocatorHeapNames_InsufficientBuffer(MockTarget.Architecture arch)
     {
-        ISOSDacInterface13 impl = CreateSOSDacImplForHeapTests(arch);
+        (ISOSDacInterface13 impl, _) = CreateSOSDacImplForHeapTests(arch);
 
         int needed;
         char** names = stackalloc char*[2];
@@ -198,7 +177,7 @@ public unsafe class LoaderTests
     [ClassData(typeof(MockTarget.StdArch))]
     public void GetLoaderAllocatorHeapNames_NullPNeeded(MockTarget.Architecture arch)
     {
-        ISOSDacInterface13 impl = CreateSOSDacImplForHeapTests(arch);
+        (ISOSDacInterface13 impl, _) = CreateSOSDacImplForHeapTests(arch);
 
         int hr = impl.GetLoaderAllocatorHeapNames(0, null, null);
         Assert.Equal(HResults.S_FALSE, hr);
@@ -208,10 +187,10 @@ public unsafe class LoaderTests
     [ClassData(typeof(MockTarget.StdArch))]
     public void GetLoaderAllocatorHeaps_GetCount(MockTarget.Architecture arch)
     {
-        ISOSDacInterface13 impl = CreateSOSDacImplForHeapTests(arch);
+        (ISOSDacInterface13 impl, ClrDataAddress loaderAllocatorAddress) = CreateSOSDacImplForHeapTests(arch);
 
         int needed;
-        int hr = impl.GetLoaderAllocatorHeaps(new ClrDataAddress(0x100), 0, null, null, &needed);
+        int hr = impl.GetLoaderAllocatorHeaps(loaderAllocatorAddress, 0, null, null, &needed);
 
         Assert.Equal(HResults.S_OK, hr);
         Assert.Equal(MockHeapDictionary.Count, needed);
@@ -221,7 +200,7 @@ public unsafe class LoaderTests
     [ClassData(typeof(MockTarget.StdArch))]
     public void GetLoaderAllocatorHeaps_GetHeaps(MockTarget.Architecture arch)
     {
-        ISOSDacInterface13 impl = CreateSOSDacImplForHeapTests(arch);
+        (ISOSDacInterface13 impl, ClrDataAddress loaderAllocatorAddress) = CreateSOSDacImplForHeapTests(arch);
 
         int needed;
         impl.GetLoaderAllocatorHeapNames(0, null, &needed);
@@ -231,7 +210,7 @@ public unsafe class LoaderTests
 
         ClrDataAddress* heaps = stackalloc ClrDataAddress[needed];
         int* kinds = stackalloc int[needed];
-        int hr = impl.GetLoaderAllocatorHeaps(new ClrDataAddress(0x100), needed, heaps, kinds, &needed);
+        int hr = impl.GetLoaderAllocatorHeaps(loaderAllocatorAddress, needed, heaps, kinds, &needed);
 
         Assert.Equal(HResults.S_OK, hr);
         Assert.Equal(MockHeapDictionary.Count, needed);
@@ -247,12 +226,12 @@ public unsafe class LoaderTests
     [ClassData(typeof(MockTarget.StdArch))]
     public void GetLoaderAllocatorHeaps_InsufficientBuffer(MockTarget.Architecture arch)
     {
-        ISOSDacInterface13 impl = CreateSOSDacImplForHeapTests(arch);
+        (ISOSDacInterface13 impl, ClrDataAddress loaderAllocatorAddress) = CreateSOSDacImplForHeapTests(arch);
 
         ClrDataAddress* heaps = stackalloc ClrDataAddress[2];
         int* kinds = stackalloc int[2];
         int needed;
-        int hr = impl.GetLoaderAllocatorHeaps(new ClrDataAddress(0x100), 2, heaps, kinds, &needed);
+        int hr = impl.GetLoaderAllocatorHeaps(loaderAllocatorAddress, 2, heaps, kinds, &needed);
 
         Assert.Equal(HResults.E_INVALIDARG, hr);
         Assert.Equal(MockHeapDictionary.Count, needed);
@@ -262,7 +241,7 @@ public unsafe class LoaderTests
     [ClassData(typeof(MockTarget.StdArch))]
     public void GetLoaderAllocatorHeaps_NullAddress(MockTarget.Architecture arch)
     {
-        ISOSDacInterface13 impl = CreateSOSDacImplForHeapTests(arch);
+        (ISOSDacInterface13 impl, _) = CreateSOSDacImplForHeapTests(arch);
 
         int hr = impl.GetLoaderAllocatorHeaps(new ClrDataAddress(0), 0, null, null, null);
 
@@ -271,93 +250,65 @@ public unsafe class LoaderTests
 
     private readonly record struct SectionDef(uint VirtualSize, uint VirtualAddress, uint SizeOfRawData, uint PointerToRawData);
 
-    private static (TestPlaceholderTarget Target, TargetPointer PEAssemblyAddr, TargetPointer ImageBase) CreateWebcilTarget(
+    private static (Target Target, TargetPointer PEAssemblyAddr, TargetPointer ImageBase) CreateWebcilTarget(
         MockTarget.Architecture arch,
         ushort coffSections,
         SectionDef[] sections)
     {
         TargetTestHelpers helpers = new(arch);
-        MockMemorySpace.Builder builder = new(helpers);
-        var allocator = builder.CreateUntrackedAllocator(0x0010_0000, 0x0020_0000);
+        MockProcessBuilder processBuilder = new(arch);
+        MockDataDescriptorType webcilHeaderType = null!;
+        MockDataDescriptorType webcilSectionType = null!;
+        ulong peAssemblyAddress = 0;
 
-        var probeExtLayout = helpers.LayoutFields([
-            new(nameof(Data.ProbeExtensionResult.Type), DataType.int32),
-        ]);
-        var peAssemblyLayout = helpers.LayoutFields([
-            new(nameof(Data.PEAssembly.PEImage), DataType.pointer),
-            new(nameof(Data.PEAssembly.AssemblyBinder), DataType.pointer),
-        ]);
-        var peImageLayout = helpers.LayoutFields([
-            new(nameof(Data.PEImage.LoadedImageLayout), DataType.pointer),
-            new(nameof(Data.PEImage.ProbeExtensionResult), DataType.ProbeExtensionResult, probeExtLayout.Stride),
-        ]);
-        var imageLayoutLayout = helpers.LayoutFields([
-            new(nameof(Data.PEImageLayout.Base), DataType.pointer),
-            new(nameof(Data.PEImageLayout.Size), DataType.uint32),
-            new(nameof(Data.PEImageLayout.Flags), DataType.uint32),
-            new(nameof(Data.PEImageLayout.Format), DataType.uint32),
-        ]);
-        var webcilHeaderLayout = helpers.LayoutFields([
-            new(nameof(Data.WebcilHeader.CoffSections), DataType.uint16),
-        ]);
-        var webcilSectionLayout = helpers.LayoutFields([
-            new(nameof(Data.WebcilSectionHeader.VirtualSize), DataType.uint32),
-            new(nameof(Data.WebcilSectionHeader.VirtualAddress), DataType.uint32),
-            new(nameof(Data.WebcilSectionHeader.SizeOfRawData), DataType.uint32),
-            new(nameof(Data.WebcilSectionHeader.PointerToRawData), DataType.uint32),
-        ]);
-
-        var types = new Dictionary<DataType, Target.TypeInfo>
+        processBuilder.AddCoreClr(module =>
         {
-            [DataType.PEAssembly] = new() { Fields = peAssemblyLayout.Fields, Size = peAssemblyLayout.Stride },
-            [DataType.PEImage] = new() { Fields = peImageLayout.Fields, Size = peImageLayout.Stride },
-            [DataType.PEImageLayout] = new() { Fields = imageLayoutLayout.Fields, Size = imageLayoutLayout.Stride },
-            [DataType.ProbeExtensionResult] = new() { Fields = probeExtLayout.Fields, Size = probeExtLayout.Stride },
-            [DataType.WebcilHeader] = new() { Fields = webcilHeaderLayout.Fields, Size = webcilHeaderLayout.Stride },
-            [DataType.WebcilSectionHeader] = new() { Fields = webcilSectionLayout.Fields, Size = webcilSectionLayout.Stride },
-        };
+            module.AddDataDescriptor(descriptor =>
+            {
+                webcilHeaderType = descriptor.AddSequentialType("WebcilHeader", type =>
+                {
+                    type.AddField("CoffSections", sizeof(ushort));
+                });
 
-        uint headerStride = webcilHeaderLayout.Stride;
-        uint sectionStride = webcilSectionLayout.Stride;
+                webcilSectionType = descriptor.AddSequentialType("WebcilSectionHeader", type =>
+                {
+                    type.AddUInt32Field("VirtualSize");
+                    type.AddUInt32Field("VirtualAddress");
+                    type.AddUInt32Field("SizeOfRawData");
+                    type.AddUInt32Field("PointerToRawData");
+                });
+            });
+        });
+
+        MockMemorySpace.BumpAllocator allocator = processBuilder.MemoryBuilder.DefaultAllocator;
+        uint headerStride = webcilHeaderType.Size!.Value;
+        uint sectionStride = webcilSectionType.Size!.Value;
         uint webcilImageSize = headerStride + sectionStride * (uint)sections.Length;
-        var webcilImage = allocator.AllocateFragment(webcilImageSize, "WebcilImage");
+        MockMemorySpace.HeapFragment webcilImage = allocator.AllocateFragment(webcilImageSize, "WebcilImage");
 
         helpers.Write(
-            webcilImage.Data.AsSpan().Slice(webcilHeaderLayout.Fields[nameof(Data.WebcilHeader.CoffSections)].Offset, sizeof(ushort)),
+            webcilImage.Data.AsSpan().Slice(webcilHeaderType.GetFieldOffset(nameof(Data.WebcilHeader.CoffSections)), sizeof(ushort)),
             coffSections);
 
         for (int i = 0; i < sections.Length; i++)
         {
             int baseOffset = (int)headerStride + i * (int)sectionStride;
-            var sf = webcilSectionLayout.Fields;
-            helpers.Write(webcilImage.Data.AsSpan().Slice(baseOffset + sf[nameof(Data.WebcilSectionHeader.VirtualSize)].Offset, sizeof(uint)), sections[i].VirtualSize);
-            helpers.Write(webcilImage.Data.AsSpan().Slice(baseOffset + sf[nameof(Data.WebcilSectionHeader.VirtualAddress)].Offset, sizeof(uint)), sections[i].VirtualAddress);
-            helpers.Write(webcilImage.Data.AsSpan().Slice(baseOffset + sf[nameof(Data.WebcilSectionHeader.SizeOfRawData)].Offset, sizeof(uint)), sections[i].SizeOfRawData);
-            helpers.Write(webcilImage.Data.AsSpan().Slice(baseOffset + sf[nameof(Data.WebcilSectionHeader.PointerToRawData)].Offset, sizeof(uint)), sections[i].PointerToRawData);
+            helpers.Write(webcilImage.Data.AsSpan().Slice(baseOffset + webcilSectionType.GetFieldOffset(nameof(Data.WebcilSectionHeader.VirtualSize)), sizeof(uint)), sections[i].VirtualSize);
+            helpers.Write(webcilImage.Data.AsSpan().Slice(baseOffset + webcilSectionType.GetFieldOffset(nameof(Data.WebcilSectionHeader.VirtualAddress)), sizeof(uint)), sections[i].VirtualAddress);
+            helpers.Write(webcilImage.Data.AsSpan().Slice(baseOffset + webcilSectionType.GetFieldOffset(nameof(Data.WebcilSectionHeader.SizeOfRawData)), sizeof(uint)), sections[i].SizeOfRawData);
+            helpers.Write(webcilImage.Data.AsSpan().Slice(baseOffset + webcilSectionType.GetFieldOffset(nameof(Data.WebcilSectionHeader.PointerToRawData)), sizeof(uint)), sections[i].PointerToRawData);
         }
 
-        builder.AddHeapFragment(webcilImage);
+        processBuilder.AddLoader(loader =>
+        {
+            ulong peImageLayoutAddress = loader.AddPEImageLayout(webcilImage.Address, webcilImageSize, format: 1);
+            ulong peImageAddress = loader.AddPEImage(peImageLayoutAddress);
+            peAssemblyAddress = loader.AddPEAssembly(peImageAddress);
+        });
 
-        var layoutFrag = allocator.AllocateFragment(imageLayoutLayout.Stride, "PEImageLayout");
-        helpers.WritePointer(layoutFrag.Data.AsSpan().Slice(imageLayoutLayout.Fields[nameof(Data.PEImageLayout.Base)].Offset, helpers.PointerSize), webcilImage.Address);
-        helpers.Write(layoutFrag.Data.AsSpan().Slice(imageLayoutLayout.Fields[nameof(Data.PEImageLayout.Size)].Offset, sizeof(uint)), webcilImageSize);
-        helpers.Write(layoutFrag.Data.AsSpan().Slice(imageLayoutLayout.Fields[nameof(Data.PEImageLayout.Flags)].Offset, sizeof(uint)), 0u);
-        helpers.Write(layoutFrag.Data.AsSpan().Slice(imageLayoutLayout.Fields[nameof(Data.PEImageLayout.Format)].Offset, sizeof(uint)), 1u);
-        builder.AddHeapFragment(layoutFrag);
-
-        var peImageFrag = allocator.AllocateFragment(peImageLayout.Stride, "PEImage");
-        helpers.WritePointer(peImageFrag.Data.AsSpan().Slice(peImageLayout.Fields[nameof(Data.PEImage.LoadedImageLayout)].Offset, helpers.PointerSize), layoutFrag.Address);
-        builder.AddHeapFragment(peImageFrag);
-
-        var peAssemblyFrag = allocator.AllocateFragment(peAssemblyLayout.Stride, "PEAssembly");
-        helpers.WritePointer(peAssemblyFrag.Data.AsSpan().Slice(peAssemblyLayout.Fields[nameof(Data.PEAssembly.PEImage)].Offset, helpers.PointerSize), peImageFrag.Address);
-        builder.AddHeapFragment(peAssemblyFrag);
-
-        var target = new TestPlaceholderTarget(arch, builder.GetMemoryContext().ReadFromTarget, types);
-        target.SetContracts(Mock.Of<ContractRegistry>(
-            c => c.Loader == ((IContractFactory<ILoader>)new LoaderFactory()).CreateContract(target, 1)));
-
-        return (target, new TargetPointer(peAssemblyFrag.Address), new TargetPointer(webcilImage.Address));
+        MockProcess process = processBuilder.Build();
+        Target target = process.CreateContractDescriptorTarget();
+        return (target, new TargetPointer(peAssemblyAddress), new TargetPointer(webcilImage.Address));
     }
 
     [Theory]

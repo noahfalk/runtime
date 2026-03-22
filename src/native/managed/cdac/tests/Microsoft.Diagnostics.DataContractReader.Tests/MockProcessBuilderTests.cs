@@ -412,4 +412,50 @@ public sealed class MockProcessBuilderTests
         Assert.Equal(arch.Is64Bit ? 28 : 20, threadStore.Fields["DeadCount"].Offset);
     }
 
+    [Theory]
+    [ClassData(typeof(MockTarget.StdArch))]
+    public void AddLoader_AddsExpectedTypes(MockTarget.Architecture arch)
+    {
+        MockProcess process = new MockProcessBuilder(arch)
+            .AddLoader(static _ => { })
+            .Build();
+
+        ContractDescriptorTarget target = process.CreateContractDescriptorTarget();
+        Target.TypeInfo module = target.GetTypeInfo("Module");
+        Target.TypeInfo assembly = target.GetTypeInfo("Assembly");
+        Target.TypeInfo probeExtensionResult = target.GetTypeInfo("ProbeExtensionResult");
+        Target.TypeInfo peAssembly = target.GetTypeInfo("PEAssembly");
+        Target.TypeInfo peImage = target.GetTypeInfo("PEImage");
+        Target.TypeInfo peImageLayout = target.GetTypeInfo("PEImageLayout");
+
+        Assert.Equal(0, module.Fields["Assembly"].Offset);
+        Assert.Equal(arch.PointerSize, module.Fields["PEAssembly"].Offset);
+        Assert.Equal(2 * arch.PointerSize, module.Fields["Base"].Offset);
+        Assert.Equal(3 * arch.PointerSize, module.Fields["Flags"].Offset);
+        Assert.Equal(arch.Is64Bit ? 32 : 16, module.Fields["LoaderAllocator"].Offset);
+        Assert.Equal(arch.Is64Bit ? 48 : 24, module.Fields["Path"].Offset);
+        Assert.Equal(arch.Is64Bit ? 56 : 28, module.Fields["FileName"].Offset);
+        Assert.Equal(arch.Is64Bit ? 152 : 76, module.Fields["DynamicILBlobTable"].Offset);
+
+        Assert.Equal(0, assembly.Fields["Module"].Offset);
+        Assert.Equal(arch.PointerSize, assembly.Fields["IsCollectible"].Offset);
+        Assert.Equal(arch.PointerSize + 1, assembly.Fields["IsDynamic"].Offset);
+        Assert.Equal(arch.Is64Bit ? 16 : 8, assembly.Fields["Error"].Offset);
+        Assert.Equal(arch.Is64Bit ? 24 : 12, assembly.Fields["NotifyFlags"].Offset);
+        Assert.Equal(arch.Is64Bit ? 28 : 16, assembly.Fields["IsLoaded"].Offset);
+
+        Assert.Equal(0, probeExtensionResult.Fields["Type"].Offset);
+
+        Assert.Equal(0, peAssembly.Fields["PEImage"].Offset);
+        Assert.Equal(arch.PointerSize, peAssembly.Fields["AssemblyBinder"].Offset);
+
+        Assert.Equal(0, peImage.Fields["LoadedImageLayout"].Offset);
+        Assert.Equal(arch.PointerSize, peImage.Fields["ProbeExtensionResult"].Offset);
+
+        Assert.Equal(0, peImageLayout.Fields["Base"].Offset);
+        Assert.Equal(arch.PointerSize, peImageLayout.Fields["Size"].Offset);
+        Assert.Equal(arch.PointerSize + sizeof(uint), peImageLayout.Fields["Flags"].Offset);
+        Assert.Equal(arch.PointerSize + (2 * sizeof(uint)), peImageLayout.Fields["Format"].Offset);
+    }
+
 }
