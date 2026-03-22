@@ -39,29 +39,29 @@ public static partial class MockDescriptors
         public Thread(MockMemorySpace.Builder builder, (ulong Start, ulong End) allocationRange)
         {
             Builder = builder;
-            _allocator = Builder.CreateAllocator(allocationRange.Start, allocationRange.End);
+            _allocator = Builder.CreateUntrackedAllocator(allocationRange.Start, allocationRange.End);
 
-            TargetTestHelpers helpers = builder.TargetTestHelpers;
+            TargetTestHelpers helpers = (TargetTestHelpers)builder.TargetTestHelpers;
 
             Types = GetTypes(helpers);
 
             // Add thread store and set global to point at it
-            MockMemorySpace.HeapFragment threadStoreGlobal = _allocator.Allocate((ulong)helpers.PointerSize, "[global pointer] ThreadStore");
-            MockMemorySpace.HeapFragment threadStore = _allocator.Allocate(Types[DataType.ThreadStore].Size.Value, "ThreadStore");
+            MockMemorySpace.HeapFragment threadStoreGlobal = _allocator.AllocateFragment((ulong)helpers.PointerSize, "[global pointer] ThreadStore");
+            MockMemorySpace.HeapFragment threadStore = _allocator.AllocateFragment(Types[DataType.ThreadStore].Size.Value, "ThreadStore");
             helpers.WritePointer(threadStoreGlobal.Data, threadStore.Address);
             Builder.AddHeapFragments([threadStoreGlobal, threadStore]);
             _threadStoreAddress = threadStore.Address;
 
             // Add finalizer thread and set global to point at it
-            MockMemorySpace.HeapFragment finalizerThreadGlobal = _allocator.Allocate((ulong)helpers.PointerSize, "[global pointer] Finalizer thread");
-            MockMemorySpace.HeapFragment finalizerThread = _allocator.Allocate(Types[DataType.Thread].Size.Value, "Finalizer thread");
+            MockMemorySpace.HeapFragment finalizerThreadGlobal = _allocator.AllocateFragment((ulong)helpers.PointerSize, "[global pointer] Finalizer thread");
+            MockMemorySpace.HeapFragment finalizerThread = _allocator.AllocateFragment(Types[DataType.Thread].Size.Value, "Finalizer thread");
             helpers.WritePointer(finalizerThreadGlobal.Data, finalizerThread.Address);
             Builder.AddHeapFragments([finalizerThreadGlobal, finalizerThread]);
             FinalizerThreadAddress = finalizerThread.Address;
 
             // Add GC thread and set global to point at it
-            MockMemorySpace.HeapFragment gcThreadGlobal = _allocator.Allocate((ulong)helpers.PointerSize, "[global pointer] GC thread");
-            MockMemorySpace.HeapFragment gcThread = _allocator.Allocate(Types[DataType.Thread].Size.Value, "GC thread");
+            MockMemorySpace.HeapFragment gcThreadGlobal = _allocator.AllocateFragment((ulong)helpers.PointerSize, "[global pointer] GC thread");
+            MockMemorySpace.HeapFragment gcThread = _allocator.AllocateFragment(Types[DataType.Thread].Size.Value, "GC thread");
             helpers.WritePointer(gcThreadGlobal.Data, gcThread.Address);
             Builder.AddHeapFragments([gcThreadGlobal, gcThread]);
             GCThreadAddress = gcThread.Address;
@@ -123,7 +123,7 @@ public static partial class MockDescriptors
 
         internal void SetThreadCounts(int threadCount, int unstartedCount, int backgroundCount, int pendingCount, int deadCount)
         {
-            TargetTestHelpers helpers = Builder.TargetTestHelpers;
+            TargetTestHelpers helpers = (TargetTestHelpers)Builder.TargetTestHelpers;
             Target.TypeInfo typeInfo = Types[DataType.ThreadStore];
             Span<byte> data = Builder.BorrowAddressRange(_threadStoreAddress, (int)typeInfo.Size.Value);
             helpers.Write(
@@ -148,16 +148,16 @@ public static partial class MockDescriptors
 
         internal TargetPointer AddThread(uint id, TargetNUInt osId, long allocBytes, long allocBytesLoh)
         {
-            TargetTestHelpers helpers = Builder.TargetTestHelpers;
+            TargetTestHelpers helpers = (TargetTestHelpers)Builder.TargetTestHelpers;
             Target.TypeInfo threadType = Types[DataType.Thread];
             Target.TypeInfo exceptionInfoType = Types[DataType.ExceptionInfo];
             Target.TypeInfo runtimeThreadLocalsType = Types[DataType.RuntimeThreadLocals];
             Target.TypeInfo eeAllocContextType = Types[DataType.EEAllocContext];
             Target.TypeInfo gcAllocContextType = Types[DataType.GCAllocContext];
 
-            MockMemorySpace.HeapFragment exceptionInfo = _allocator.Allocate(exceptionInfoType.Size.Value, "ExceptionInfo");
-            MockMemorySpace.HeapFragment runtimeThreadLocals = _allocator.Allocate(runtimeThreadLocalsType.Size.Value, "RuntimeThreadLocals");
-            MockMemorySpace.HeapFragment thread = _allocator.Allocate(threadType.Size.Value, "Thread");
+            MockMemorySpace.HeapFragment exceptionInfo = _allocator.AllocateFragment(exceptionInfoType.Size.Value, "ExceptionInfo");
+            MockMemorySpace.HeapFragment runtimeThreadLocals = _allocator.AllocateFragment(runtimeThreadLocalsType.Size.Value, "RuntimeThreadLocals");
+            MockMemorySpace.HeapFragment thread = _allocator.AllocateFragment(threadType.Size.Value, "Thread");
             Span<byte> data = thread.Data.AsSpan();
             helpers.Write(
                 data.Slice(threadType.Fields[nameof(Data.Thread.Id)].Offset),
@@ -214,7 +214,7 @@ public static partial class MockDescriptors
 
         internal void SetStackLimits(TargetPointer threadAddress, TargetPointer stackBase, TargetPointer stackLimit)
         {
-            TargetTestHelpers helpers = Builder.TargetTestHelpers;
+            TargetTestHelpers helpers = (TargetTestHelpers)Builder.TargetTestHelpers;
             Target.TypeInfo threadType = Types[DataType.Thread];
             Span<byte> data = Builder.BorrowAddressRange(threadAddress, (int)threadType.Size.Value);
             helpers.WritePointer(data.Slice(threadType.Fields[nameof(Data.Thread.CachedStackBase)].Offset), stackBase);
@@ -222,3 +222,4 @@ public static partial class MockDescriptors
         }
     }
 }
+

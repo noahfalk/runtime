@@ -90,7 +90,7 @@ public static partial class MockDescriptors
 
         private readonly MockMemorySpace.BumpAllocator _allocator;
 
-        internal TargetTestHelpers TargetTestHelpers => RTSBuilder.Builder.TargetTestHelpers;
+        internal TargetTestHelpers TargetTestHelpers => (TargetTestHelpers)RTSBuilder.Builder.TargetTestHelpers;
         internal MockMemorySpace.Builder Builder => RTSBuilder.Builder;
         internal uint MethodDescAlignment => RuntimeTypeSystem.GetMethodDescAlignment(TargetTestHelpers);
 
@@ -102,7 +102,7 @@ public static partial class MockDescriptors
         {
             RTSBuilder = rtsBuilder;
             LoaderBuilder = loaderBuilder;
-            _allocator = Builder.CreateAllocator(allocationRange.Start, allocationRange.End);
+            _allocator = Builder.CreateUntrackedAllocator(allocationRange.Start, allocationRange.End);
             Types = GetTypes();
 
             Globals = rtsBuilder.Globals.Concat(
@@ -143,7 +143,7 @@ public static partial class MockDescriptors
             uint totalAllocSize = Types[DataType.MethodDescChunk].Size.Value;
             totalAllocSize += (uint)(size * MethodDescAlignment);
 
-            MockMemorySpace.HeapFragment methodDescChunk = _allocator.Allocate(totalAllocSize, $"MethodDescChunk {name}");
+            MockMemorySpace.HeapFragment methodDescChunk = _allocator.AllocateFragment(totalAllocSize, $"MethodDescChunk {name}");
             Span<byte> dest = methodDescChunk.Data;
             TargetTestHelpers.WritePointer(dest.Slice(Types[DataType.MethodDescChunk].Fields[nameof(Data.MethodDescChunk.MethodTable)].Offset), methodTable);
             TargetTestHelpers.Write(dest.Slice(Types[DataType.MethodDescChunk].Fields[nameof(Data.MethodDescChunk.Size)].Offset), size);
@@ -186,7 +186,7 @@ public static partial class MockDescriptors
             TargetTestHelpers.Write(data.Slice(typeInfo.Fields[nameof(Data.InstantiatedMethodDesc.NumGenericArgs)].Offset), (ushort)typesArgs.Length);
             if (typesArgs.Length > 0)
             {
-                MockMemorySpace.HeapFragment fragment = _allocator.Allocate((ulong)(typesArgs.Length * TargetTestHelpers.PointerSize), "InstantiatedMethodDesc type args");
+                MockMemorySpace.HeapFragment fragment = _allocator.AllocateFragment((ulong)(typesArgs.Length * TargetTestHelpers.PointerSize), "InstantiatedMethodDesc type args");
                 Builder.AddHeapFragment(fragment);
                 TargetTestHelpers.WritePointer(data.Slice(typeInfo.Fields[nameof(Data.InstantiatedMethodDesc.PerInstInfo)].Offset), fragment.Address);
                 for (int i = 0; i < typesArgs.Length; i++)
@@ -198,3 +198,4 @@ public static partial class MockDescriptors
         }
     }
 }
+

@@ -56,9 +56,8 @@ public static partial class MockDescriptors
         public RuntimeFunctions(MockMemorySpace.Builder builder, (ulong Start, ulong End) allocationRange, bool includeEndAddress, bool unwindInfoIsFunctionLength)
         {
             Builder = builder;
-            _allocator = Builder.CreateAllocator(allocationRange.Start, allocationRange.End);
-            Types = GetTypesForTypeFields(
-                Builder.TargetTestHelpers,
+            _allocator = Builder.CreateUntrackedAllocator(allocationRange.Start, allocationRange.End);
+            Types = GetTypesForTypeFields((TargetTestHelpers)Builder.TargetTestHelpers,
                 [
                     RuntimeFunctionFields(includeEndAddress),
                     UnwindInfoFields(unwindInfoIsFunctionLength)
@@ -67,14 +66,14 @@ public static partial class MockDescriptors
 
         public TargetPointer AddRuntimeFunctions(uint[] runtimeFunctions)
         {
-            TargetTestHelpers helpers = Builder.TargetTestHelpers;
+            TargetTestHelpers helpers = (TargetTestHelpers)Builder.TargetTestHelpers;
 
             // Add the array of runtime functions
             uint numRuntimeFunctions = (uint)runtimeFunctions.Length;
             Target.TypeInfo runtimeFunctionType = Types[DataType.RuntimeFunction];
             uint runtimeFunctionSize = runtimeFunctionType.Size.Value;
             Target.TypeInfo unwindInfoType = Types[DataType.UnwindInfo];
-            MockMemorySpace.HeapFragment runtimeFunctionsFragment = _allocator.Allocate((numRuntimeFunctions + 1) * runtimeFunctionSize, $"RuntimeFunctions[{numRuntimeFunctions}]");
+            MockMemorySpace.HeapFragment runtimeFunctionsFragment = _allocator.AllocateFragment((numRuntimeFunctions + 1) * runtimeFunctionSize, $"RuntimeFunctions[{numRuntimeFunctions}]");
             Builder.AddHeapFragment(runtimeFunctionsFragment);
             for (uint i = 0; i < numRuntimeFunctions; i++)
             {
@@ -89,7 +88,7 @@ public static partial class MockDescriptors
                     helpers.Write(func.Slice(runtimeFunctionType.Fields[nameof(Data.RuntimeFunction.EndAddress)].Offset, sizeof(uint)), runtimeFunctions[i] + functionLength);
 
                 // Add the unwindInfo
-                MockMemorySpace.HeapFragment unwindInfoFragment = _allocator.Allocate(unwindInfoType.Size.Value, $"UnwindInfo for RuntimeFunction {runtimeFunctions[i]}");
+                MockMemorySpace.HeapFragment unwindInfoFragment = _allocator.AllocateFragment(unwindInfoType.Size.Value, $"UnwindInfo for RuntimeFunction {runtimeFunctions[i]}");
                 Builder.AddHeapFragment(unwindInfoFragment);
                 Span<byte> unwindInfo = unwindInfoFragment.Data.AsSpan();
                 if (Types[DataType.UnwindInfo].Fields.ContainsKey(nameof(Data.UnwindInfo.FunctionLength)))
@@ -117,3 +116,4 @@ public static partial class MockDescriptors
         }
     }
 }
+

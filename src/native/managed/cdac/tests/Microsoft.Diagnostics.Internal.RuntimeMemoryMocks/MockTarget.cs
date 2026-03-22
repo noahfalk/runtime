@@ -11,6 +11,7 @@ public class MockTarget
     {
         public bool IsLittleEndian { get; init; }
         public bool Is64Bit { get; init; }
+        public int PointerSize => Is64Bit ? sizeof(ulong) : sizeof(uint);
     }
 
     /// <summary>

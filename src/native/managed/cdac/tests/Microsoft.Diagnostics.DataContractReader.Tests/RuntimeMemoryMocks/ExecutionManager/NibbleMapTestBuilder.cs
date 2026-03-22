@@ -68,7 +68,7 @@ public abstract class NibbleMapTestBuilderBase
         MapBase = mapBase;
         Arch = arch;
         int nibbleMapSize = (int)Addr2Pos(mapRangeSize);
-        NibbleMapFragment = allocator.Allocate((ulong)nibbleMapSize, "Nibble Map");
+        NibbleMapFragment = allocator.AllocateFragment((ulong)nibbleMapSize, "Nibble Map");
     }
 
     public abstract void AllocateCodeChunk(TargetCodePointer codeStart, uint codeSize);

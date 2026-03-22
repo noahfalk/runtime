@@ -8,8 +8,6 @@ using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Text;
 
-using Microsoft.Diagnostics.DataContractReader;
-
 namespace Microsoft.Diagnostics.Internal.RuntimeMemoryMocks;
 
 /// <summary>
@@ -25,51 +23,129 @@ public static unsafe partial class MockMemorySpace
     {
         private readonly ulong _blockStart;
         private readonly ulong _blockEnd; // exclusive
+        private readonly MockTarget.Architecture _architecture;
         private ulong _current;
 
-        public int MinAlign { get; init; } = 16; // by default align to 16 bytes
-        public BumpAllocator(ulong blockStart, ulong blockEnd)
+        public ulong MinAlign { get; init; } = 16; // by default align to 16 bytes
+        public BumpAllocator(ulong blockStart, ulong blockEnd, MockTarget.Architecture architecture, bool tracksAllocatedFragments = false)
         {
             _blockStart = blockStart;
             _blockEnd = blockEnd;
+            _architecture = architecture;
             _current = blockStart;
+            TracksAllocatedFragments = tracksAllocatedFragments;
         }
 
         public ulong RangeStart => _blockStart;
         public ulong RangeEnd => _blockEnd;
+        public ulong Current => _current;
+        public bool TracksAllocatedFragments { get; }
 
-        private ulong AlignUp(ulong value)
+        public List<HeapFragment> Allocations { get; } = [];
+
+        private static ulong AlignUp(ulong value, ulong alignment)
         {
-            return (value + (ulong)(MinAlign - 1)) & ~(ulong)(MinAlign - 1);
+            return (value + (alignment - 1)) & ~(alignment - 1);
         }
 
-        public bool TryAllocate(ulong size, string name, [NotNullWhen(true)] out HeapFragment? fragment)
+        public void AdvanceAligned(ulong alignment)
         {
-            ulong current = AlignUp(_current);
+            _current = AlignUp(_current, alignment);
+        }
+
+        public void AdvanceTo(ulong address)
+        {
+            if (address < _current)
+            {
+                throw new InvalidOperationException($"Cannot move allocator backwards from 0x{_current:x} to 0x{address:x}.");
+            }
+
+            if (address > _blockEnd)
+            {
+                throw new InvalidOperationException($"Cannot advance allocator beyond range end 0x{_blockEnd:x}.");
+            }
+
+            _current = address;
+        }
+
+        public bool TryAllocate(byte[] initialData, string name, ulong alignment, [NotNullWhen(true)] out HeapFragment? fragment)
+        {
+            ulong current = AlignUp(_current, alignment);
+            ulong size = (ulong)initialData.Length;
             Debug.Assert(current >= _current);
-            Debug.Assert((current % (ulong)MinAlign) == 0);
+            Debug.Assert((current % (ulong)alignment) == 0);
             if (current + size <= _blockEnd)
             {
-                fragment = new HeapFragment {
+                fragment = new HeapFragment
+                {
                     Address = current,
-                    Data = new byte[size],
+                    Data = initialData,
                     Name = name,
                 };
                 current += size;
                 _current = current;
+                Allocations.Add(fragment);
                 return true;
             }
             fragment = null;
             return false;
         }
-
-        public HeapFragment Allocate(ulong size, string name)
+        private HeapFragment AllocateFragmentCore(byte[] initialData, string name, ulong alignment)
         {
-            if (!TryAllocate(size, name, out HeapFragment? fragment))
+            if (!TryAllocate(initialData, name, alignment, out HeapFragment? fragment))
             {
                 throw new InvalidOperationException("Failed to allocate");
             }
-            return fragment.Value;
+            return fragment;
+        }
+
+        public HeapFragment AllocateFragment(byte[] initialData, string? name = null, ulong? alignment = null)
+            => AllocateFragmentCore(initialData, name ?? "fragment", alignment ?? MinAlign);
+
+        public HeapFragment AllocateFragment(ulong size, string? name = null, ulong? alignment = null)
+            => AllocateFragment(new byte[checked((int)size)], name, alignment);
+
+        public HeapFragment AllocateFragment(ReadOnlySpan<byte> content, string? name = null, ulong? alignment = null)
+            => AllocateFragment(content.ToArray(), name, alignment);
+
+        public ulong AllocateInt32(int value, string? name = null)
+        {
+            HeapFragment fragment = AllocateFragment(sizeof(int), name ?? $"int32({value})");
+            SpanWriter writer = new(_architecture, fragment.Data);
+            writer.Write(value);
+            return fragment.Address;
+        }
+
+        public ulong AllocateUInt32(uint value, string? name = null)
+        {
+            HeapFragment fragment = AllocateFragment(sizeof(uint), name ?? $"uint32({value})");
+            SpanWriter writer = new(_architecture, fragment.Data);
+            writer.Write(value);
+            return fragment.Address;
+        }
+
+        public ulong AllocateInt64(long value, string? name = null)
+        {
+            HeapFragment fragment = AllocateFragment(sizeof(long), name ?? $"int64({value})");
+            SpanWriter writer = new(_architecture, fragment.Data);
+            writer.Write(unchecked((ulong)value));
+            return fragment.Address;
+        }
+
+        public ulong AllocateUInt64(ulong value, string? name = null)
+        {
+            HeapFragment fragment = AllocateFragment(sizeof(ulong), name ?? $"uint64({value})");
+            SpanWriter writer = new(_architecture, fragment.Data);
+            writer.Write(value);
+            return fragment.Address;
+        }
+
+        public ulong AllocatePointer(ulong pointerValue, string? name = null)
+        {
+            HeapFragment fragment = AllocateFragment((ulong)_architecture.PointerSize, name ?? $"ptr(0x{pointerValue:x})");
+            SpanWriter writer = new(_architecture, fragment.Data);
+            writer.WritePointer(pointerValue);
+            return fragment.Address;
         }
 
         public bool Overlaps(BumpAllocator other)

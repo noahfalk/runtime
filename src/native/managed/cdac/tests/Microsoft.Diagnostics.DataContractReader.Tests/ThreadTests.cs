@@ -232,8 +232,8 @@ public unsafe class ThreadTests
         Span<byte> exTrackerBytes = builder.BorrowAddressRange(exceptionTrackerFieldAddr, helpers.PointerSize);
         TargetPointer exceptionInfoAddr = new TargetPointer(helpers.ReadPointer(exTrackerBytes));
 
-        var allocator = builder.CreateAllocator(0x1_0000, 0x2_0000);
-        MockMemorySpace.HeapFragment handleFragment = allocator.Allocate((ulong)helpers.PointerSize, "ThrownObjectHandle");
+        var allocator = builder.CreateUntrackedAllocator(0x1_0000, 0x2_0000);
+        MockMemorySpace.HeapFragment handleFragment = allocator.AllocateFragment((ulong)helpers.PointerSize, "ThrownObjectHandle");
         TargetPointer expectedObject = new TargetPointer(0xA001);
         helpers.WritePointer(handleFragment.Data, expectedObject);
         builder.AddHeapFragment(handleFragment);
@@ -292,8 +292,8 @@ public unsafe class ThreadTests
         Span<byte> exTrackerBytes = builder.BorrowAddressRange(exceptionTrackerFieldAddr, helpers.PointerSize);
         TargetPointer exceptionInfoAddr = new TargetPointer(helpers.ReadPointer(exTrackerBytes));
 
-        var allocator = builder.CreateAllocator(0x1_0000, 0x2_0000);
-        MockMemorySpace.HeapFragment handleFragment = allocator.Allocate((ulong)helpers.PointerSize, "ThrownObjectHandle");
+        var allocator = builder.CreateUntrackedAllocator(0x1_0000, 0x2_0000);
+        MockMemorySpace.HeapFragment handleFragment = allocator.AllocateFragment((ulong)helpers.PointerSize, "ThrownObjectHandle");
         helpers.WritePointer(handleFragment.Data, TargetPointer.Null);
         builder.AddHeapFragment(handleFragment);
 
@@ -310,3 +310,4 @@ public unsafe class ThreadTests
         Assert.Equal(TargetPointer.Null, thrownObjectHandle);
     }
 }
+

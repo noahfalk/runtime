@@ -213,9 +213,9 @@ public class PrecodeStubsTests
         public PrecodeBuilder(AllocationRange allocationRange, MockMemorySpace.Builder builder, int precodesVersion, Dictionary<DataType, Target.TypeInfo>? typeInfoCache = null) {
             Builder = builder;
             PrecodesVersion = precodesVersion;
-            PrecodeAllocator = builder.CreateAllocator(allocationRange.PrecodeDescriptorStart, allocationRange.PrecodeDescriptorEnd);
-            StubDataPageAllocator = builder.CreateAllocator(allocationRange.StubDataPageStart, allocationRange.StubDataPageEnd);
-            Types = typeInfoCache ?? GetTypes(Builder.TargetTestHelpers);
+            PrecodeAllocator = builder.CreateUntrackedAllocator(allocationRange.PrecodeDescriptorStart, allocationRange.PrecodeDescriptorEnd);
+            StubDataPageAllocator = builder.CreateUntrackedAllocator(allocationRange.StubDataPageStart, allocationRange.StubDataPageEnd);
+            Types = typeInfoCache ?? GetTypes((TargetTestHelpers)Builder.TargetTestHelpers);
         }
 
         public Dictionary<DataType, Target.TypeInfo> GetTypes(TargetTestHelpers targetTestHelpers) {
@@ -276,7 +276,7 @@ public class PrecodeStubsTests
         public void AddPlatformMetadata(PrecodeTestDescriptor descriptor) {
             SetCodePointerFlags(descriptor);
             var typeInfo = Types[DataType.PrecodeMachineDescriptor];
-            var fragment = PrecodeAllocator.Allocate((ulong)typeInfo.Size, $"{descriptor.Name} Precode Machine Descriptor");
+            var fragment = PrecodeAllocator.AllocateFragment((ulong)typeInfo.Size, $"{descriptor.Name} Precode Machine Descriptor");
             Builder.AddHeapFragment(fragment);
             MachineDescriptorAddress = fragment.Address;
             Span<byte> desc = Builder.BorrowAddressRange(fragment.Address, (int)typeInfo.Size);
@@ -293,7 +293,7 @@ public class PrecodeStubsTests
             // TODO[cdac]: allow writing other kinds of stub precode subtypes
             ulong stubCodeSize = (ulong)test.StubPrecodeSize;
             var stubDataTypeInfo  = Types[DataType.StubPrecodeData];
-            MockMemorySpace.HeapFragment stubDataFragment = StubDataPageAllocator.Allocate(Math.Max((ulong)stubDataTypeInfo.Size, (ulong)stubCodeSize), $"Stub data for {name} on {test.Name}");
+            MockMemorySpace.HeapFragment stubDataFragment = StubDataPageAllocator.AllocateFragment(Math.Max((ulong)stubDataTypeInfo.Size, (ulong)stubCodeSize), $"Stub data for {name} on {test.Name}");
             Builder.AddHeapFragment(stubDataFragment);
             // allocate the code one page before the stub data
             ulong stubCodeStart = stubDataFragment.Address - test.StubCodePageSize;
@@ -302,7 +302,7 @@ public class PrecodeStubsTests
                 Data = new byte[stubCodeSize],
                 Name = $"Stub code for {name} on {test.Name} with data at 0x{stubDataFragment.Address:x}",
             };
-            test.WritePrecodeType(test.StubPrecode, Builder.TargetTestHelpers, stubCodeFragment.Data);
+            test.WritePrecodeType(test.StubPrecode, (TargetTestHelpers)Builder.TargetTestHelpers, stubCodeFragment.Data);
             Builder.AddHeapFragment(stubCodeFragment);
 
             Span<byte> stubData = Builder.BorrowAddressRange(stubDataFragment.Address, (int)stubDataTypeInfo.Size);
@@ -323,11 +323,11 @@ public class PrecodeStubsTests
         public TargetCodePointer AddThisPtrRetBufPrecodeEntry(string name, PrecodeTestDescriptor test, TargetPointer methodDesc) {
             ulong stubCodeSize = (ulong)test.StubPrecodeSize;
             var stubDataTypeInfo  = Types[DataType.StubPrecodeData];
-            MockMemorySpace.HeapFragment stubDataFragment = StubDataPageAllocator.Allocate(Math.Max((ulong)stubDataTypeInfo.Size, (ulong)stubCodeSize), $"Stub data for {name} on {test.Name}");
+            MockMemorySpace.HeapFragment stubDataFragment = StubDataPageAllocator.AllocateFragment(Math.Max((ulong)stubDataTypeInfo.Size, (ulong)stubCodeSize), $"Stub data for {name} on {test.Name}");
             Builder.AddHeapFragment(stubDataFragment);
 
             var thisPtrRetBufDataTypeInfo  = Types[DataType.ThisPtrRetBufPrecodeData];
-            MockMemorySpace.HeapFragment thisPtrRetBufStubDataFragment = StubDataPageAllocator.Allocate((ulong)thisPtrRetBufDataTypeInfo.Size, $"ThisPtrRetBufData stub data for {name} on {test.Name}");
+            MockMemorySpace.HeapFragment thisPtrRetBufStubDataFragment = StubDataPageAllocator.AllocateFragment((ulong)thisPtrRetBufDataTypeInfo.Size, $"ThisPtrRetBufData stub data for {name} on {test.Name}");
             Builder.AddHeapFragment(thisPtrRetBufStubDataFragment);
 
             // allocate the code one page before the stub data
@@ -337,7 +337,7 @@ public class PrecodeStubsTests
                 Data = new byte[stubCodeSize],
                 Name = $"Stub code for {name} on {test.Name} with data at 0x{stubDataFragment.Address:x}",
             };
-            test.WritePrecodeType(test.StubPrecode, Builder.TargetTestHelpers, stubCodeFragment.Data);
+            test.WritePrecodeType(test.StubPrecode, (TargetTestHelpers)Builder.TargetTestHelpers, stubCodeFragment.Data);
             Builder.AddHeapFragment(stubCodeFragment);
 
             Span<byte> thisPtrStubData = Builder.BorrowAddressRange(thisPtrRetBufStubDataFragment.Address, (int)thisPtrRetBufDataTypeInfo.Size);
@@ -410,3 +410,4 @@ public class PrecodeStubsTests
         }
     }
 }
+

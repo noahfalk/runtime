@@ -54,7 +54,7 @@ public class MethodTableTests
     internal static (TargetPointer MethodTable, TargetPointer EEClass) AddSystemObjectMethodTable(MockRTS rtsBuilder)
     {
         MockMemorySpace.Builder builder = rtsBuilder.Builder;
-        TargetTestHelpers targetTestHelpers = builder.TargetTestHelpers;
+        TargetTestHelpers targetTestHelpers = (TargetTestHelpers)builder.TargetTestHelpers;
         System.Reflection.TypeAttributes typeAttributes = System.Reflection.TypeAttributes.Public | System.Reflection.TypeAttributes.Class;
         const int numMethods = 8; // System.Object has 8 methods
         const int numVirtuals = 3; // System.Object has 3 virtual methods
@@ -153,7 +153,7 @@ public class MethodTableTests
         RTSContractHelper(arch,
         (rtsBuilder) =>
         {
-            TargetTestHelpers targetTestHelpers = rtsBuilder.Builder.TargetTestHelpers;
+            TargetTestHelpers targetTestHelpers = (TargetTestHelpers)rtsBuilder.Builder.TargetTestHelpers;
             TargetPointer systemObjectMethodTablePtr = AddSystemObjectMethodTable(rtsBuilder).MethodTable;
 
             System.Reflection.TypeAttributes typeAttributes = System.Reflection.TypeAttributes.Public | System.Reflection.TypeAttributes.Class;
@@ -196,7 +196,7 @@ public class MethodTableTests
         RTSContractHelper(arch,
         (rtsBuilder) =>
         {
-            TargetTestHelpers targetTestHelpers = rtsBuilder.Builder.TargetTestHelpers;
+            TargetTestHelpers targetTestHelpers = (TargetTestHelpers)rtsBuilder.Builder.TargetTestHelpers;
             TargetPointer systemObjectMethodTablePtr = AddSystemObjectMethodTable(rtsBuilder).MethodTable;
             const ushort systemArrayNumInterfaces = 4;
             const ushort systemArrayNumMethods = 37; // Arbitrary. Not trying to exactly match  the real System.Array
@@ -243,7 +243,7 @@ public class MethodTableTests
         RTSContractHelper(arch,
         (rtsBuilder) =>
         {
-            TargetTestHelpers helpers = rtsBuilder.Builder.TargetTestHelpers;
+            TargetTestHelpers helpers = (TargetTestHelpers)rtsBuilder.Builder.TargetTestHelpers;
 
             // Create a full MethodTable that will pass validation
             methodTablePtr = rtsBuilder.AddMethodTable("PartialEEClass MT",
@@ -259,7 +259,7 @@ public class MethodTableTests
             // EEClass is eagerly read during validation, so this now correctly reports
             // E_INVALIDARG instead of surfacing VirtualReadException from those later reads.
             int pointerSize = helpers.PointerSize;
-            MockMemorySpace.HeapFragment tinyEEClass = rtsBuilder.TypeSystemAllocator.Allocate(
+            MockMemorySpace.HeapFragment tinyEEClass = rtsBuilder.TypeSystemAllocator.AllocateFragment(
                 (ulong)pointerSize, "Tiny EEClass (MethodTable field only)");
             helpers.WritePointer(tinyEEClass.Data, methodTablePtr);
             rtsBuilder.Builder.AddHeapFragment(tinyEEClass);
@@ -287,7 +287,7 @@ public class MethodTableTests
         RTSContractHelper(arch,
         (rtsBuilder) =>
         {
-            TargetTestHelpers targetTestHelpers = rtsBuilder.Builder.TargetTestHelpers;
+            TargetTestHelpers targetTestHelpers = (TargetTestHelpers)rtsBuilder.Builder.TargetTestHelpers;
             TargetPointer systemObjectMethodTablePtr = AddSystemObjectMethodTable(rtsBuilder).MethodTable;
 
             // Create the base Continuation class (parent is System.Object)
@@ -335,7 +335,7 @@ public class MethodTableTests
         RTSContractHelper(arch,
         (rtsBuilder) =>
         {
-            TargetTestHelpers helpers = rtsBuilder.Builder.TargetTestHelpers;
+            TargetTestHelpers helpers = (TargetTestHelpers)rtsBuilder.Builder.TargetTestHelpers;
             Target.TypeInfo mtTypeInfo = rtsBuilder.Types[DataType.MethodTable];
 
             // Create a valid EEClass that will point back to our tiny MethodTable
@@ -348,7 +348,7 @@ public class MethodTableTests
             // at subsequent offsets will be unreadable.
             int eeClassOrCanonMTOffset = mtTypeInfo.Fields[nameof(Data.MethodTable.EEClassOrCanonMT)].Offset;
             ulong partialSize = (ulong)(eeClassOrCanonMTOffset + helpers.PointerSize);
-            MockMemorySpace.HeapFragment tinyMT = rtsBuilder.TypeSystemAllocator.Allocate(
+            MockMemorySpace.HeapFragment tinyMT = rtsBuilder.TypeSystemAllocator.AllocateFragment(
                 partialSize, "Tiny MethodTable (validation fields only)");
 
             Span<byte> dest = tinyMT.Data;
@@ -390,7 +390,7 @@ public class MethodTableTests
         RTSContractHelper(arch,
         (rtsBuilder) =>
         {
-            TargetTestHelpers targetTestHelpers = rtsBuilder.Builder.TargetTestHelpers;
+            TargetTestHelpers targetTestHelpers = (TargetTestHelpers)rtsBuilder.Builder.TargetTestHelpers;
             const uint multidimArrayCorTypeAttr = (uint)(System.Reflection.TypeAttributes.Public | System.Reflection.TypeAttributes.Sealed);
             // Category_Array (without Category_IfArrayThenSzArray) marks a multidim ELEMENT_TYPE_ARRAY
             const uint multidimFlags = (uint)(MethodTableFlags_1.WFLAGS_HIGH.HasComponentSize | MethodTableFlags_1.WFLAGS_HIGH.Category_Array);
@@ -454,7 +454,7 @@ public class MethodTableTests
         RTSContractHelper(arch,
         (rtsBuilder) =>
         {
-            TargetTestHelpers targetTestHelpers = rtsBuilder.Builder.TargetTestHelpers;
+            TargetTestHelpers targetTestHelpers = (TargetTestHelpers)rtsBuilder.Builder.TargetTestHelpers;
             systemObjectMethodTablePtr = AddSystemObjectMethodTable(rtsBuilder).MethodTable;
 
             // Don't set the continuation global (it remains null)
@@ -488,7 +488,7 @@ public class MethodTableTests
         RTSContractHelper(arch,
         (rtsBuilder) =>
         {
-            TargetTestHelpers targetTestHelpers = rtsBuilder.Builder.TargetTestHelpers;
+            TargetTestHelpers targetTestHelpers = (TargetTestHelpers)rtsBuilder.Builder.TargetTestHelpers;
             TargetPointer systemObjectMethodTablePtr = AddSystemObjectMethodTable(rtsBuilder).MethodTable;
 
             // Create the base Continuation class

@@ -51,10 +51,10 @@ public static partial class MockDescriptors
         public Object(RuntimeTypeSystem rtsBuilder, (ulong Start, ulong End) allocationRange)
         {
             RTSBuilder = rtsBuilder;
-            ManagedObjectAllocator = Builder.CreateAllocator(allocationRange.Start, allocationRange.End);
+            ManagedObjectAllocator = Builder.CreateUntrackedAllocator(allocationRange.Start, allocationRange.End);
 
             const ulong TestSyncBlocksAddress = 0x00000000_e0000000;
-            SyncBlockAllocator = Builder.CreateAllocator(start: TestSyncBlocksAddress, end: TestSyncBlocksAddress + 0x1000);
+            SyncBlockAllocator = Builder.CreateUntrackedAllocator(start: TestSyncBlocksAddress, end: TestSyncBlocksAddress + 0x1000);
 
             Types = GetTypes();
 
@@ -75,8 +75,7 @@ public static partial class MockDescriptors
 
         private Dictionary<DataType, Target.TypeInfo> GetTypes()
         {
-            Dictionary<DataType, Target.TypeInfo> types = GetTypesForTypeFields(
-                Builder.TargetTestHelpers,
+            Dictionary<DataType, Target.TypeInfo> types = GetTypesForTypeFields((TargetTestHelpers)Builder.TargetTestHelpers,
                 [
                     ObjectFields,
                     StringFields,
@@ -99,8 +98,8 @@ public static partial class MockDescriptors
         private void AddStringMethodTablePointer()
         {
             MockMemorySpace.Builder builder = Builder;
-            TargetTestHelpers targetTestHelpers = builder.TargetTestHelpers;
-            MockMemorySpace.HeapFragment stringMethodTableFragment = RTSBuilder.TypeSystemAllocator.Allocate((ulong)targetTestHelpers.PointerSize /*HACK*/, "String Method Table (fake)");
+            TargetTestHelpers targetTestHelpers = (TargetTestHelpers)builder.TargetTestHelpers;
+            MockMemorySpace.HeapFragment stringMethodTableFragment = RTSBuilder.TypeSystemAllocator.AllocateFragment((ulong)targetTestHelpers.PointerSize /*HACK*/, "String Method Table (fake)");
             TestStringMethodTableAddress = stringMethodTableFragment.Address;
             MockMemorySpace.HeapFragment fragment = new() { Name = "Address of String Method Table", Address = TestStringMethodTableGlobalAddress, Data = new byte[targetTestHelpers.PointerSize] };
             targetTestHelpers.WritePointer(fragment.Data, stringMethodTableFragment.Address);
@@ -110,7 +109,7 @@ public static partial class MockDescriptors
         private void AddSyncTableEntriesPointer()
         {
             MockMemorySpace.Builder builder = Builder;
-            TargetTestHelpers targetTestHelpers = builder.TargetTestHelpers;
+            TargetTestHelpers targetTestHelpers = (TargetTestHelpers)builder.TargetTestHelpers;
             MockMemorySpace.HeapFragment fragment = new() { Name = "Address of Sync Table Entries", Address = TestSyncTableEntriesGlobalAddress, Data = new byte[targetTestHelpers.PointerSize] };
             targetTestHelpers.WritePointer(fragment.Data, TestSyncTableEntriesAddress);
             builder.AddHeapFragment(fragment);
@@ -119,10 +118,10 @@ public static partial class MockDescriptors
         internal TargetPointer AddObject(TargetPointer methodTable, uint prefixSize =0)
         {
             MockMemorySpace.Builder builder = Builder;
-            TargetTestHelpers targetTestHelpers = builder.TargetTestHelpers;
+            TargetTestHelpers targetTestHelpers = (TargetTestHelpers)builder.TargetTestHelpers;
             Target.TypeInfo objectTypeInfo = Types[DataType.Object];
             uint totalSize = objectTypeInfo.Size.Value + prefixSize;
-            MockMemorySpace.HeapFragment fragment = ManagedObjectAllocator.Allocate(totalSize, $"Object : MT = '{methodTable}'");
+            MockMemorySpace.HeapFragment fragment = ManagedObjectAllocator.AllocateFragment(totalSize, $"Object : MT = '{methodTable}'");
 
             Span<byte> dest = fragment.Data.AsSpan((int)prefixSize);
             targetTestHelpers.WritePointer(dest.Slice(objectTypeInfo.Fields["m_pMethTab"].Offset), methodTable);
@@ -133,7 +132,7 @@ public static partial class MockDescriptors
         internal TargetPointer AddObjectWithSyncBlock(TargetPointer methodTable, uint syncBlockIndex, TargetPointer rcw, TargetPointer ccw, TargetPointer ccf)
         {
             MockMemorySpace.Builder builder = Builder;
-            TargetTestHelpers targetTestHelpers = builder.TargetTestHelpers;
+            TargetTestHelpers targetTestHelpers = (TargetTestHelpers)builder.TargetTestHelpers;
             const uint IsSyncBlockIndexBits = 0x08000000;
             const uint SyncBlockIndexMask = (1 << 26) - 1;
             if ((syncBlockIndex & SyncBlockIndexMask) != syncBlockIndex)
@@ -156,7 +155,7 @@ public static partial class MockDescriptors
         {
             Dictionary<DataType, Target.TypeInfo> types = Types;
             MockMemorySpace.Builder builder = Builder;
-            TargetTestHelpers targetTestHelpers = builder.TargetTestHelpers;
+            TargetTestHelpers targetTestHelpers = (TargetTestHelpers)builder.TargetTestHelpers;
             // Tests write the sync blocks starting at TestSyncBlocksAddress
             Target.TypeInfo syncBlockTypeInfo = types[DataType.SyncBlock];
             Target.TypeInfo interopSyncBlockTypeInfo = types[DataType.InteropSyncBlockInfo];
@@ -164,7 +163,7 @@ public static partial class MockDescriptors
             uint interopSyncBlockInfoSize = syncBlockSize + interopSyncBlockTypeInfo.Size.Value;
 
 
-            MockMemorySpace.HeapFragment syncBlock = SyncBlockAllocator.Allocate(interopSyncBlockInfoSize, $"Sync Block {index}");
+            MockMemorySpace.HeapFragment syncBlock = SyncBlockAllocator.AllocateFragment(interopSyncBlockInfoSize, $"Sync Block {index}");
             TargetPointer syncBlockAddr = syncBlock.Address;
 
             // Add the sync table entry - pointing at the sync block
@@ -192,11 +191,11 @@ public static partial class MockDescriptors
         {
             MockMemorySpace.Builder builder = Builder;
             Dictionary<DataType, Target.TypeInfo> types = Types;
-            TargetTestHelpers targetTestHelpers = builder.TargetTestHelpers;
+            TargetTestHelpers targetTestHelpers = (TargetTestHelpers)builder.TargetTestHelpers;
             Target.TypeInfo objectTypeInfo = types[DataType.Object];
             Target.TypeInfo stringTypeInfo = types[DataType.String];
             int size = (int)stringTypeInfo.Size.Value + value.Length * sizeof(char);
-            MockMemorySpace.HeapFragment fragment = ManagedObjectAllocator.Allocate((uint)size, $"String = '{value}'");
+            MockMemorySpace.HeapFragment fragment = ManagedObjectAllocator.AllocateFragment((uint)size, $"String = '{value}'");
             Span<byte> dest = fragment.Data;
             targetTestHelpers.WritePointer(dest.Slice(objectTypeInfo.Fields["m_pMethTab"].Offset), TestStringMethodTableAddress);
             targetTestHelpers.Write(dest.Slice(stringTypeInfo.Fields["m_StringLength"].Offset), (uint)value.Length);
@@ -209,7 +208,7 @@ public static partial class MockDescriptors
         {
             MockMemorySpace.Builder builder = Builder;
             Dictionary<DataType, Target.TypeInfo> types = Types;
-            TargetTestHelpers targetTestHelpers = builder.TargetTestHelpers;
+            TargetTestHelpers targetTestHelpers = (TargetTestHelpers)builder.TargetTestHelpers;
             bool isSingleDimensionZeroLowerBound = array.Rank == 1 && array.GetLowerBound(0) == 0;
 
             // Bounds are part of the array object for non-single dimension or non-zero lower bound arrays
@@ -240,7 +239,7 @@ public static partial class MockDescriptors
                 module: TargetPointer.Null, parentMethodTable: TargetPointer.Null, numInterfaces: 0, numVirtuals: 0);
             RTSBuilder.SetEEClassAndCanonMTRefs(eeClassAddress, methodTableAddress);
 
-            MockMemorySpace.HeapFragment fragment = ManagedObjectAllocator.Allocate((uint)size, $"Array = '{string.Join(',', array)}'");
+            MockMemorySpace.HeapFragment fragment = ManagedObjectAllocator.AllocateFragment((uint)size, $"Array = '{string.Join(',', array)}'");
             Span<byte> dest = fragment.Data;
             targetTestHelpers.WritePointer(dest.Slice(objectTypeInfo.Fields["m_pMethTab"].Offset), methodTableAddress);
             targetTestHelpers.Write(dest.Slice(arrayTypeInfo.Fields["m_NumComponents"].Offset), (uint)array.Length);
@@ -249,3 +248,4 @@ public static partial class MockDescriptors
         }
     }
 }
+

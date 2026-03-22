@@ -33,14 +33,14 @@ public static partial class MockDescriptors
         public SyncBlock(MockMemorySpace.Builder builder, (ulong Start, ulong End) allocationRange)
         {
             Builder = builder;
-            _allocator = builder.CreateAllocator(allocationRange.Start, allocationRange.End);
+            _allocator = builder.CreateUntrackedAllocator(allocationRange.Start, allocationRange.End);
 
-            TargetTestHelpers helpers = builder.TargetTestHelpers;
+            TargetTestHelpers helpers = (TargetTestHelpers)builder.TargetTestHelpers;
             Types = GetTypes(helpers);
 
             // Allocate SyncBlockCache and a global pointer to it
-            MockMemorySpace.HeapFragment syncBlockCacheGlobal = _allocator.Allocate((ulong)helpers.PointerSize, "[global pointer] SyncBlockCache");
-            MockMemorySpace.HeapFragment syncBlockCache = _allocator.Allocate(Types[DataType.SyncBlockCache].Size.Value, "SyncBlockCache");
+            MockMemorySpace.HeapFragment syncBlockCacheGlobal = _allocator.AllocateFragment((ulong)helpers.PointerSize, "[global pointer] SyncBlockCache");
+            MockMemorySpace.HeapFragment syncBlockCache = _allocator.AllocateFragment(Types[DataType.SyncBlockCache].Size.Value, "SyncBlockCache");
             helpers.WritePointer(syncBlockCacheGlobal.Data, syncBlockCache.Address);
             Builder.AddHeapFragments([syncBlockCacheGlobal, syncBlockCache]);
             _syncBlockCacheAddress = syncBlockCache.Address;
@@ -52,7 +52,7 @@ public static partial class MockDescriptors
                 (uint)1);
 
             // Set up a dummy SyncTableEntries global (not used by cleanup path)
-            MockMemorySpace.HeapFragment syncTableEntriesGlobal = _allocator.Allocate((ulong)helpers.PointerSize, "[global pointer] SyncTableEntries");
+            MockMemorySpace.HeapFragment syncTableEntriesGlobal = _allocator.AllocateFragment((ulong)helpers.PointerSize, "[global pointer] SyncTableEntries");
             helpers.WritePointer(syncTableEntriesGlobal.Data, new TargetPointer(TestSyncTableEntriesAddress));
             Builder.AddHeapFragment(syncTableEntriesGlobal);
 
@@ -77,14 +77,14 @@ public static partial class MockDescriptors
         internal TargetPointer AddSyncBlockToCleanupList(
             TargetPointer rcw, TargetPointer ccw, TargetPointer ccf, bool hasInteropInfo = true)
         {
-            TargetTestHelpers helpers = Builder.TargetTestHelpers;
+            TargetTestHelpers helpers = (TargetTestHelpers)Builder.TargetTestHelpers;
             Target.TypeInfo syncBlockTypeInfo = Types[DataType.SyncBlock];
             Target.TypeInfo interopTypeInfo = Types[DataType.InteropSyncBlockInfo];
 
             uint syncBlockSize = syncBlockTypeInfo.Size.Value;
             uint totalSize = syncBlockSize + (hasInteropInfo ? interopTypeInfo.Size.Value : 0u);
 
-            MockMemorySpace.HeapFragment fragment = _allocator.Allocate(totalSize, "SyncBlock (cleanup)");
+            MockMemorySpace.HeapFragment fragment = _allocator.AllocateFragment(totalSize, "SyncBlock (cleanup)");
             TargetPointer syncBlockAddr = fragment.Address;
 
             Span<byte> syncBlockData = fragment.Data.AsSpan().Slice(0, (int)syncBlockSize);
@@ -117,7 +117,7 @@ public static partial class MockDescriptors
 
         private void UpdateCleanupBlockList(TargetPointer newHead)
         {
-            TargetTestHelpers helpers = Builder.TargetTestHelpers;
+            TargetTestHelpers helpers = (TargetTestHelpers)Builder.TargetTestHelpers;
             Target.TypeInfo cacheTypeInfo = Types[DataType.SyncBlockCache];
             Span<byte> cacheData = Builder.BorrowAddressRange(_syncBlockCacheAddress, (int)cacheTypeInfo.Size.Value);
             helpers.WritePointer(
@@ -126,3 +126,4 @@ public static partial class MockDescriptors
         }
     }
 }
+

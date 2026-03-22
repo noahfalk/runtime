@@ -55,11 +55,11 @@ public static partial class MockDescriptors
         public ReJIT(MockMemorySpace.Builder builder, (ulong Start, ulong End) allocationRange, bool rejitOnAttachEnabled = true)
         {
             Builder = builder;
-            _rejitAllocator = Builder.CreateAllocator(allocationRange.Start, allocationRange.End);
+            _rejitAllocator = Builder.CreateUntrackedAllocator(allocationRange.Start, allocationRange.End);
 
             _codeVersions = new CodeVersions(Builder);
 
-            Types = GetTypes(builder.TargetTestHelpers);
+            Types = GetTypes((TargetTestHelpers)builder.TargetTestHelpers);
 
             Globals =
             [
@@ -94,7 +94,7 @@ public static partial class MockDescriptors
         private ulong AddProfControlBlock(bool rejitOnAttachEnabled)
         {
             Target.TypeInfo info = Types[DataType.ProfControlBlock];
-            MockMemorySpace.HeapFragment fragment = _rejitAllocator.Allocate((ulong)Types[DataType.ProfControlBlock].Size, "ProfControlBlock");
+            MockMemorySpace.HeapFragment fragment = _rejitAllocator.AllocateFragment((ulong)Types[DataType.ProfControlBlock].Size, "ProfControlBlock");
             Builder.AddHeapFragment(fragment);
             Span<byte> pcb = Builder.BorrowAddressRange(fragment.Address, fragment.Data.Length);
             Builder.TargetTestHelpers.Write(pcb.Slice(info.Fields[nameof(Data.ProfControlBlock.GlobalEventMask)].Offset, sizeof(ulong)), 0ul);
@@ -103,3 +103,4 @@ public static partial class MockDescriptors
         }
     }
 }
+

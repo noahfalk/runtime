@@ -107,7 +107,7 @@ public class BuiltInCOMTests
 
         // The RCW block must be large enough to hold the RCW header plus all inline entries
         uint totalSize = entriesOffset + entrySize * TestRCWInterfaceCacheSize;
-        MockMemorySpace.HeapFragment fragment = allocator.Allocate(totalSize, "RCW with inline entries");
+        MockMemorySpace.HeapFragment fragment = allocator.AllocateFragment(totalSize, "RCW with inline entries");
         Span<byte> data = fragment.Data;
 
         // Write RCW header fields
@@ -587,14 +587,14 @@ public class BuiltInCOMTests
         int P = helpers.PointerSize;
         uint cmtSize = (uint)(2 * P);
 
-        var allocator = builder.CreateAllocator(AllocationStart, AllocationEnd);
+        var allocator = builder.CreateUntrackedAllocator(AllocationStart, AllocationEnd);
 
         // SimpleComCallWrapper (MainWrapper will point to the CCW below)
-        var simpleWrapperFrag = allocator.Allocate((ulong)(12 + 3 * P), "SimpleComCallWrapper");
+        var simpleWrapperFrag = allocator.AllocateFragment((ulong)(12 + 3 * P), "SimpleComCallWrapper");
         builder.AddHeapFragment(simpleWrapperFrag);
 
         // ComCallWrapper: SimpleWrapper + 5 slots + Next + Handle = 8 pointers
-        var ccwFrag = allocator.Allocate((ulong)(8 * P), "ComCallWrapper");
+        var ccwFrag = allocator.AllocateFragment((ulong)(8 * P), "ComCallWrapper");
         builder.AddHeapFragment(ccwFrag);
 
         // Write sccw.MainWrapper = ccwFrag.Address (start wrapper)
@@ -602,18 +602,18 @@ public class BuiltInCOMTests
         helpers.WritePointer(sccwData.Slice(12, P), ccwFrag.Address);
 
         // Slot 0: IUnknown (layout complete; MethodTable is Null per spec for first wrapper's slot 0)
-        var cmt0Frag = allocator.Allocate(cmtSize, "ComMethodTable[0]");
+        var cmt0Frag = allocator.AllocateFragment(cmtSize, "ComMethodTable[0]");
         builder.AddHeapFragment(cmt0Frag);
         ulong vtable0 = cmt0Frag.Address + cmtSize;
 
         // Slot 1: incomplete layout (should be skipped)
-        var cmt1Frag = allocator.Allocate(cmtSize, "ComMethodTable[1]");
+        var cmt1Frag = allocator.AllocateFragment(cmtSize, "ComMethodTable[1]");
         builder.AddHeapFragment(cmt1Frag);
         ulong vtable1 = cmt1Frag.Address + cmtSize;
 
         // Slot 2: layout complete with a MethodTable
         ulong expectedMethodTable2 = 0xdead_0002;
-        var cmt2Frag = allocator.Allocate(cmtSize, "ComMethodTable[2]");
+        var cmt2Frag = allocator.AllocateFragment(cmtSize, "ComMethodTable[2]");
         builder.AddHeapFragment(cmt2Frag);
         ulong vtable2 = cmt2Frag.Address + cmtSize;
 
@@ -665,31 +665,31 @@ public class BuiltInCOMTests
         int P = helpers.PointerSize;
         uint cmtSize = (uint)(2 * P);
 
-        var allocator = builder.CreateAllocator(AllocationStart, AllocationEnd);
+        var allocator = builder.CreateUntrackedAllocator(AllocationStart, AllocationEnd);
 
         // SimpleComCallWrapper (shared by both wrappers; MainWrapper will point to first CCW)
-        var simpleWrapperFrag = allocator.Allocate((ulong)(12 + 3 * P), "SimpleComCallWrapper");
+        var simpleWrapperFrag = allocator.AllocateFragment((ulong)(12 + 3 * P), "SimpleComCallWrapper");
         builder.AddHeapFragment(simpleWrapperFrag);
 
         // First CCW: slot 0 = IUnknown; slots 1-4 = null; Next -> second CCW
-        var ccw1Frag = allocator.Allocate((ulong)(8 * P), "ComCallWrapper[1]");
+        var ccw1Frag = allocator.AllocateFragment((ulong)(8 * P), "ComCallWrapper[1]");
         builder.AddHeapFragment(ccw1Frag);
 
-        var cmt1_0Frag = allocator.Allocate(cmtSize, "ComMethodTable ccw1[0]");
+        var cmt1_0Frag = allocator.AllocateFragment(cmtSize, "ComMethodTable ccw1[0]");
         builder.AddHeapFragment(cmt1_0Frag);
         ulong vtable1_0 = cmt1_0Frag.Address + cmtSize;
 
         // Second CCW: slot 0 = IClassX, slot 2 = interface; Next = terminator
-        var ccw2Frag = allocator.Allocate((ulong)(8 * P), "ComCallWrapper[2]");
+        var ccw2Frag = allocator.AllocateFragment((ulong)(8 * P), "ComCallWrapper[2]");
         builder.AddHeapFragment(ccw2Frag);
 
         ulong expectedMT_slot0 = 0xbbbb_0000;
-        var cmt2_0Frag = allocator.Allocate(cmtSize, "ComMethodTable ccw2[0]");
+        var cmt2_0Frag = allocator.AllocateFragment(cmtSize, "ComMethodTable ccw2[0]");
         builder.AddHeapFragment(cmt2_0Frag);
         ulong vtable2_0 = cmt2_0Frag.Address + cmtSize;
 
         ulong expectedMT_slot2 = 0xcccc_0002;
-        var cmt2_2Frag = allocator.Allocate(cmtSize, "ComMethodTable ccw2[2]");
+        var cmt2_2Frag = allocator.AllocateFragment(cmtSize, "ComMethodTable ccw2[2]");
         builder.AddHeapFragment(cmt2_2Frag);
         ulong vtable2_2 = cmt2_2Frag.Address + cmtSize;
 
@@ -762,26 +762,26 @@ public class BuiltInCOMTests
         int P = helpers.PointerSize;
         uint cmtSize = (uint)(2 * P);
 
-        var allocator = builder.CreateAllocator(AllocationStart, AllocationEnd);
+        var allocator = builder.CreateUntrackedAllocator(AllocationStart, AllocationEnd);
 
         // SimpleComCallWrapper; MainWrapper → first CCW (set up below)
-        var simpleWrapperFrag = allocator.Allocate((ulong)(12 + 3 * P), "SimpleComCallWrapper");
+        var simpleWrapperFrag = allocator.AllocateFragment((ulong)(12 + 3 * P), "SimpleComCallWrapper");
         builder.AddHeapFragment(simpleWrapperFrag);
 
         // First (start) CCW: one interface in slot 0 (IUnknown), Next → second CCW
-        var ccw1Frag = allocator.Allocate((ulong)(8 * P), "ComCallWrapper[1]");
+        var ccw1Frag = allocator.AllocateFragment((ulong)(8 * P), "ComCallWrapper[1]");
         builder.AddHeapFragment(ccw1Frag);
 
-        var cmt1Frag = allocator.Allocate(cmtSize, "ComMethodTable[1]");
+        var cmt1Frag = allocator.AllocateFragment(cmtSize, "ComMethodTable[1]");
         builder.AddHeapFragment(cmt1Frag);
         ulong vtable1 = cmt1Frag.Address + cmtSize;
 
         // Second (linked) CCW: one interface in slot 1, Next = terminator
-        var ccw2Frag = allocator.Allocate((ulong)(8 * P), "ComCallWrapper[2]");
+        var ccw2Frag = allocator.AllocateFragment((ulong)(8 * P), "ComCallWrapper[2]");
         builder.AddHeapFragment(ccw2Frag);
 
         ulong expectedMT = 0xaaaa_0001;
-        var cmt2Frag = allocator.Allocate(cmtSize, "ComMethodTable[2]");
+        var cmt2Frag = allocator.AllocateFragment(cmtSize, "ComMethodTable[2]");
         builder.AddHeapFragment(cmt2Frag);
         ulong vtable2 = cmt2Frag.Address + cmtSize;
 
@@ -859,7 +859,7 @@ public class BuiltInCOMTests
         BuiltInCOMContractHelper(arch,
             (builder, targetTestHelpers, types) =>
             {
-                MockMemorySpace.BumpAllocator allocator = builder.CreateAllocator(AllocationRangeStart, AllocationRangeEnd);
+                MockMemorySpace.BumpAllocator allocator = builder.CreateUntrackedAllocator(AllocationRangeStart, AllocationRangeEnd);
                 rcwAddress = AddRCWWithInlineEntries(builder, targetTestHelpers, types, allocator, expectedEntries);
             },
             (target) =>
@@ -888,10 +888,10 @@ public class BuiltInCOMTests
         int P = helpers.PointerSize;
         uint cmtSize = (uint)(2 * P);
 
-        var allocator = builder.CreateAllocator(AllocationStart, AllocationEnd);
+        var allocator = builder.CreateUntrackedAllocator(AllocationStart, AllocationEnd);
 
         // SimpleComCallWrapper; MainWrapper → CCW (aligned, set up below)
-        var simpleWrapperFrag = allocator.Allocate((ulong)(12 + 3 * P), "SimpleComCallWrapper");
+        var simpleWrapperFrag = allocator.AllocateFragment((ulong)(12 + 3 * P), "SimpleComCallWrapper");
         builder.AddHeapFragment(simpleWrapperFrag);
 
         // Place the CCW at a CCWThisMask-aligned address so that (ccwAddr + P) & thisMask == ccwAddr.
@@ -913,7 +913,7 @@ public class BuiltInCOMTests
 
         // Allocate CMT and a vtable extension right after it so vtable = cmtFrag.Address + cmtSize.
         // The vtable extension holds vtable slots [0] (QI) and [1] (AddRef = TearOffAddRefAddr).
-        var cmtFrag = allocator.Allocate(cmtSize, "ComMethodTable");
+        var cmtFrag = allocator.AllocateFragment(cmtSize, "ComMethodTable");
         builder.AddHeapFragment(cmtFrag);
         ulong vtable = cmtFrag.Address + cmtSize;
         var vtableExtFrag = new MockMemorySpace.HeapFragment
@@ -988,7 +988,7 @@ public class BuiltInCOMTests
         BuiltInCOMContractHelper(arch,
             (builder, targetTestHelpers, types) =>
             {
-                MockMemorySpace.BumpAllocator allocator = builder.CreateAllocator(AllocationRangeStart, AllocationRangeEnd);
+                MockMemorySpace.BumpAllocator allocator = builder.CreateUntrackedAllocator(AllocationRangeStart, AllocationRangeEnd);
                 rcwAddress = AddRCWWithInlineEntries(builder, targetTestHelpers, types, allocator, entries);
             },
             (target) =>
@@ -1015,7 +1015,7 @@ public class BuiltInCOMTests
         BuiltInCOMContractHelper(arch,
             (builder, targetTestHelpers, types) =>
             {
-                MockMemorySpace.BumpAllocator allocator = builder.CreateAllocator(AllocationRangeStart, AllocationRangeEnd);
+                MockMemorySpace.BumpAllocator allocator = builder.CreateUntrackedAllocator(AllocationRangeStart, AllocationRangeEnd);
                 rcwAddress = AddRCWWithInlineEntries(builder, targetTestHelpers, types, allocator, []);
             },
             (target) =>
@@ -1057,7 +1057,7 @@ public class BuiltInCOMTests
         uint entriesOffset = (uint)rcwTypeInfo.Fields[nameof(Data.RCW.InterfaceEntries)].Offset;
         uint totalSize = entriesOffset + entrySize * TestRCWInterfaceCacheSize;
 
-        MockMemorySpace.HeapFragment fragment = allocator.Allocate(totalSize, "Full RCW");
+        MockMemorySpace.HeapFragment fragment = allocator.AllocateFragment(totalSize, "Full RCW");
         Span<byte> data = fragment.Data;
 
         helpers.WritePointer(data.Slice(rcwTypeInfo.Fields[nameof(Data.RCW.IdentityPointer)].Offset), identityPointer);
@@ -1088,7 +1088,7 @@ public class BuiltInCOMTests
         BuiltInCOMContractHelper(arch,
             (builder, targetTestHelpers, types) =>
             {
-                MockMemorySpace.BumpAllocator allocator = builder.CreateAllocator(AllocationRangeStart, AllocationRangeEnd);
+                MockMemorySpace.BumpAllocator allocator = builder.CreateUntrackedAllocator(AllocationRangeStart, AllocationRangeEnd);
                 rcwAddress = AddFullRCW(builder, targetTestHelpers, types, allocator,
                     identityPointer: expectedIdentity,
                     vtablePtr: expectedVTable,
@@ -1122,7 +1122,7 @@ public class BuiltInCOMTests
         BuiltInCOMContractHelper(arch,
             (builder, targetTestHelpers, types) =>
             {
-                MockMemorySpace.BumpAllocator allocator = builder.CreateAllocator(AllocationRangeStart, AllocationRangeEnd);
+                MockMemorySpace.BumpAllocator allocator = builder.CreateUntrackedAllocator(AllocationRangeStart, AllocationRangeEnd);
                 rcwAddress = AddFullRCW(builder, targetTestHelpers, types, allocator,
                     flags: RCWFlagAggregated | RCWFlagContained);
             },
@@ -1145,7 +1145,7 @@ public class BuiltInCOMTests
         BuiltInCOMContractHelper(arch,
             (builder, targetTestHelpers, types) =>
             {
-                MockMemorySpace.BumpAllocator allocator = builder.CreateAllocator(AllocationRangeStart, AllocationRangeEnd);
+                MockMemorySpace.BumpAllocator allocator = builder.CreateUntrackedAllocator(AllocationRangeStart, AllocationRangeEnd);
                 rcwAddress = AddFullRCW(builder, targetTestHelpers, types, allocator,
                     flags: RCWFlagFreeThreaded);
             },
@@ -1169,7 +1169,7 @@ public class BuiltInCOMTests
         BuiltInCOMContractHelper(arch,
             (builder, targetTestHelpers, types) =>
             {
-                MockMemorySpace.BumpAllocator allocator = builder.CreateAllocator(AllocationRangeStart, AllocationRangeEnd);
+                MockMemorySpace.BumpAllocator allocator = builder.CreateUntrackedAllocator(AllocationRangeStart, AllocationRangeEnd);
                 rcwAddress = AddFullRCW(builder, targetTestHelpers, types, allocator,
                     unknownPointer: new TargetPointer(DisconnectedSentinel));
             },
@@ -1190,11 +1190,11 @@ public class BuiltInCOMTests
         BuiltInCOMContractHelper(arch,
             (builder, targetTestHelpers, types) =>
             {
-                MockMemorySpace.BumpAllocator allocator = builder.CreateAllocator(AllocationRangeStart, AllocationRangeEnd);
+                MockMemorySpace.BumpAllocator allocator = builder.CreateUntrackedAllocator(AllocationRangeStart, AllocationRangeEnd);
 
                 // Allocate a CtxEntry whose CtxCookie differs from the RCW's CtxCookie.
                 Target.TypeInfo ctxTypeInfo = types[DataType.CtxEntry];
-                MockMemorySpace.HeapFragment ctxFragment = allocator.Allocate(ctxTypeInfo.Size!.Value, "CtxEntry");
+                MockMemorySpace.HeapFragment ctxFragment = allocator.AllocateFragment(ctxTypeInfo.Size!.Value, "CtxEntry");
                 TargetPointer ctxCookieInEntry = new TargetPointer(0xAAAA_0000);
                 builder.TargetTestHelpers.WritePointer(
                     ctxFragment.Data.AsSpan().Slice(ctxTypeInfo.Fields[nameof(Data.CtxEntry.CtxCookie)].Offset),
@@ -1228,7 +1228,7 @@ public class BuiltInCOMTests
         BuiltInCOMContractHelper(arch,
             (builder, targetTestHelpers, types) =>
             {
-                MockMemorySpace.BumpAllocator allocator = builder.CreateAllocator(AllocationRangeStart, AllocationRangeEnd);
+                MockMemorySpace.BumpAllocator allocator = builder.CreateUntrackedAllocator(AllocationRangeStart, AllocationRangeEnd);
                 rcwAddress = AddFullRCW(builder, targetTestHelpers, types, allocator,
                     syncBlockIndex: syncBlockIndex);
             },
@@ -1251,7 +1251,7 @@ public class BuiltInCOMTests
         BuiltInCOMContractHelper(arch,
             (builder, targetTestHelpers, types) =>
             {
-                MockMemorySpace.BumpAllocator allocator = builder.CreateAllocator(AllocationRangeStart, AllocationRangeEnd);
+                MockMemorySpace.BumpAllocator allocator = builder.CreateUntrackedAllocator(AllocationRangeStart, AllocationRangeEnd);
                 rcwAddress = AddRCWWithInlineEntries(builder, targetTestHelpers, types, allocator, [], expectedCookie);
             },
             (target) =>
@@ -1271,18 +1271,18 @@ public class BuiltInCOMTests
         var builder = new MockMemorySpace.Builder(helpers);
         int P = helpers.PointerSize;
 
-        var allocator = builder.CreateAllocator(AllocationStart, AllocationEnd);
+        var allocator = builder.CreateUntrackedAllocator(AllocationStart, AllocationEnd);
 
         // SimpleComCallWrapper:
         //   Offset  0: RefCount (8 bytes)
         //   Offset  8: Flags (4 bytes)
         //   Offset 12: MainWrapper (pointer)
         //   Offset 12+P: VTablePtr array (at least two pointer-sized slots: kinds 0 and 1)
-        var sccwFrag = allocator.Allocate((ulong)(12 + 3 * P), "SimpleComCallWrapper");
+        var sccwFrag = allocator.AllocateFragment((ulong)(12 + 3 * P), "SimpleComCallWrapper");
         builder.AddHeapFragment(sccwFrag);
 
         // ComCallWrapper (start wrapper, no interfaces, Next = terminator)
-        var ccwFrag = allocator.Allocate((ulong)(8 * P), "ComCallWrapper");
+        var ccwFrag = allocator.AllocateFragment((ulong)(8 * P), "ComCallWrapper");
         builder.AddHeapFragment(ccwFrag);
 
         // Vtable data for interfaceKind = 1:
@@ -1290,7 +1290,7 @@ public class BuiltInCOMTests
         //   [vtable[0]: QI slot (unused)]
         //   [vtable[1]: AddRef = TearOffAddRefSimpleAddr]
         int interfaceKind = 1;
-        var vtableDataFrag = allocator.Allocate((ulong)(3 * P), "VtableData");
+        var vtableDataFrag = allocator.AllocateFragment((ulong)(3 * P), "VtableData");
         builder.AddHeapFragment(vtableDataFrag);
         ulong vtableAddr = vtableDataFrag.Address + (ulong)P; // vtable = frag + P
 
@@ -1330,15 +1330,15 @@ public class BuiltInCOMTests
         var builder = new MockMemorySpace.Builder(helpers);
         int P = helpers.PointerSize;
 
-        var allocator = builder.CreateAllocator(AllocationStart, AllocationEnd);
+        var allocator = builder.CreateUntrackedAllocator(AllocationStart, AllocationEnd);
 
-        var handleFrag = allocator.Allocate((ulong)P, "Handle");
+        var handleFrag = allocator.AllocateFragment((ulong)P, "Handle");
         builder.AddHeapFragment(handleFrag);
 
-        var simpleWrapperFrag = allocator.Allocate((ulong)(12 + 3 * P), "SimpleComCallWrapper");
+        var simpleWrapperFrag = allocator.AllocateFragment((ulong)(12 + 3 * P), "SimpleComCallWrapper");
         builder.AddHeapFragment(simpleWrapperFrag);
 
-        var ccwFrag = allocator.Allocate((ulong)(8 * P), "ComCallWrapper");
+        var ccwFrag = allocator.AllocateFragment((ulong)(8 * P), "ComCallWrapper");
         builder.AddHeapFragment(ccwFrag);
 
         Span<byte> sccwData = builder.BorrowAddressRange(simpleWrapperFrag.Address, 12 + 3 * P);
@@ -1362,12 +1362,12 @@ public class BuiltInCOMTests
         var builder = new MockMemorySpace.Builder(helpers);
         int P = helpers.PointerSize;
 
-        var allocator = builder.CreateAllocator(AllocationStart, AllocationEnd);
+        var allocator = builder.CreateUntrackedAllocator(AllocationStart, AllocationEnd);
 
-        var simpleWrapperFrag = allocator.Allocate((ulong)(12 + 3 * P), "SimpleComCallWrapper");
+        var simpleWrapperFrag = allocator.AllocateFragment((ulong)(12 + 3 * P), "SimpleComCallWrapper");
         builder.AddHeapFragment(simpleWrapperFrag);
 
-        var ccwFrag = allocator.Allocate((ulong)(8 * P), "ComCallWrapper");
+        var ccwFrag = allocator.AllocateFragment((ulong)(8 * P), "ComCallWrapper");
         builder.AddHeapFragment(ccwFrag);
 
         Span<byte> sccwData = builder.BorrowAddressRange(simpleWrapperFrag.Address, 12 + 3 * P);
@@ -1425,15 +1425,15 @@ public class BuiltInCOMTests
         var builder = new MockMemorySpace.Builder(helpers);
         int P = helpers.PointerSize;
 
-        var allocator = builder.CreateAllocator(AllocationStart, AllocationEnd);
+        var allocator = builder.CreateUntrackedAllocator(AllocationStart, AllocationEnd);
 
-        var simpleWrapperFrag = allocator.Allocate((ulong)(12 + 3 * P), "SimpleComCallWrapper");
+        var simpleWrapperFrag = allocator.AllocateFragment((ulong)(12 + 3 * P), "SimpleComCallWrapper");
         builder.AddHeapFragment(simpleWrapperFrag);
 
-        var ccw1Frag = allocator.Allocate((ulong)(8 * P), "ComCallWrapper[1]");
+        var ccw1Frag = allocator.AllocateFragment((ulong)(8 * P), "ComCallWrapper[1]");
         builder.AddHeapFragment(ccw1Frag);
 
-        var ccw2Frag = allocator.Allocate((ulong)(8 * P), "ComCallWrapper[2]");
+        var ccw2Frag = allocator.AllocateFragment((ulong)(8 * P), "ComCallWrapper[2]");
         builder.AddHeapFragment(ccw2Frag);
 
         // sccw.MainWrapper = ccw1 (start wrapper)
@@ -1545,3 +1545,4 @@ public class BuiltInCOMTests
         Assert.Equal(TargetPointer.Null, data.OuterIUnknown);
     }
 }
+

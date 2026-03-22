@@ -13,7 +13,7 @@ public class GCTests
     [ClassData(typeof(MockTarget.StdArch))]
     public void GetHeapData_ReturnsCorrectGenerationTable(MockTarget.Architecture arch)
     {
-        var generations = new GCHeapBuilder.GenerationInput[]
+        var generations = new MockGCHeapBuilder.GenerationInput[]
         {
             new() { StartSegment = 0xAA00_0000, AllocationStart = 0xAA00_1000, AllocContextPointer = 0xAA00_2000, AllocContextLimit = 0xAA00_3000 },
             new() { StartSegment = 0xBB00_0000, AllocationStart = 0xBB00_1000, AllocContextPointer = 0, AllocContextLimit = 0 },
@@ -23,13 +23,14 @@ public class GCTests
 
         ulong[] fillPointers = [0x1000, 0x2000, 0x3000, 0x4000, 0x5000, 0x6000, 0x7000];
 
-        Target target = new TestPlaceholderTarget.Builder(arch)
+        MockProcess process = new MockProcessBuilder(arch)
             .AddGCHeapWks(gc =>
             {
                 gc.Generations = generations;
                 gc.FillPointers = fillPointers;
             })
             .Build();
+        Target target = process.CreateContractDescriptorTarget();
         IGC gc = target.Contracts.GC;
 
         GCHeapData heapData = gc.GetHeapData();
@@ -48,7 +49,7 @@ public class GCTests
     [ClassData(typeof(MockTarget.StdArch))]
     public void GetHeapData_ReturnsCorrectFillPointers(MockTarget.Architecture arch)
     {
-        var generations = new GCHeapBuilder.GenerationInput[]
+        var generations = new MockGCHeapBuilder.GenerationInput[]
         {
             new() { StartSegment = 0xAA00_0000, AllocationStart = 0xAA00_1000, AllocContextPointer = 0xAA00_2000, AllocContextLimit = 0xAA00_3000 },
             new() { StartSegment = 0xBB00_0000, AllocationStart = 0xBB00_1000, AllocContextPointer = 0, AllocContextLimit = 0 },
@@ -58,13 +59,14 @@ public class GCTests
 
         ulong[] fillPointers = [0x1111, 0x2222, 0x3333, 0x4444, 0x5555, 0x6666, 0x7777];
 
-        Target target = new TestPlaceholderTarget.Builder(arch)
+        MockProcess process = new MockProcessBuilder(arch)
             .AddGCHeapWks(gc =>
             {
                 gc.Generations = generations;
                 gc.FillPointers = fillPointers;
             })
             .Build();
+        Target target = process.CreateContractDescriptorTarget();
         IGC gc = target.Contracts.GC;
 
         GCHeapData heapData = gc.GetHeapData();
@@ -80,7 +82,7 @@ public class GCTests
     [ClassData(typeof(MockTarget.StdArch))]
     public void GetHeapData_WithFiveGenerations(MockTarget.Architecture arch)
     {
-        var generations = new GCHeapBuilder.GenerationInput[]
+        var generations = new MockGCHeapBuilder.GenerationInput[]
         {
             new() { StartSegment = 0xA000_0000, AllocationStart = 0xA000_1000, AllocContextPointer = 0xA000_2000, AllocContextLimit = 0xA000_3000 },
             new() { StartSegment = 0xB000_0000, AllocationStart = 0xB000_1000, AllocContextPointer = 0, AllocContextLimit = 0 },
@@ -91,13 +93,14 @@ public class GCTests
 
         ulong[] fillPointers = [0x1001, 0x2002, 0x3003, 0x4004, 0x5005, 0x6006, 0x7007];
 
-        Target target = new TestPlaceholderTarget.Builder(arch)
+        MockProcess process = new MockProcessBuilder(arch)
             .AddGCHeapWks(gc =>
             {
                 gc.Generations = generations;
                 gc.FillPointers = fillPointers;
             })
             .Build();
+        Target target = process.CreateContractDescriptorTarget();
         IGC gc = target.Contracts.GC;
 
         GCHeapData heapData = gc.GetHeapData();

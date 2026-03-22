@@ -20,9 +20,9 @@ public unsafe class ExceptionStateTests
         TargetPointer exceptionObjectAddr = new TargetPointer(0x5000);
         TargetTestHelpers helpers = new(arch);
         MockMemorySpace.Builder builder = new(helpers);
-        var allocator = builder.CreateAllocator(0x1_0000, 0x2_0000);
+        var allocator = builder.CreateUntrackedAllocator(0x1_0000, 0x2_0000);
 
-        MockMemorySpace.HeapFragment handleFragment = allocator.Allocate((ulong)helpers.PointerSize, "ThrownObjectHandle");
+        MockMemorySpace.HeapFragment handleFragment = allocator.AllocateFragment((ulong)helpers.PointerSize, "ThrownObjectHandle");
         helpers.WritePointer(handleFragment.Data, exceptionObjectAddr);
         builder.AddHeapFragment(handleFragment);
 
@@ -441,9 +441,9 @@ public unsafe class ExceptionStateTests
 
         TargetTestHelpers helpers = new(arch);
         MockMemorySpace.Builder builder = new(helpers);
-        var allocator = builder.CreateAllocator(0x1_0000, 0x2_0000);
+        var allocator = builder.CreateUntrackedAllocator(0x1_0000, 0x2_0000);
 
-        MockMemorySpace.HeapFragment handleFragment = allocator.Allocate((ulong)helpers.PointerSize, "LastThrownObjectHandle");
+        MockMemorySpace.HeapFragment handleFragment = allocator.AllocateFragment((ulong)helpers.PointerSize, "LastThrownObjectHandle");
         helpers.WritePointer(handleFragment.Data, exceptionObjectAddr);
         builder.AddHeapFragment(handleFragment);
         TargetPointer lastThrownObjectHandle = new TargetPointer(handleFragment.Address);
@@ -544,3 +544,4 @@ public unsafe class ExceptionStateTests
         Assert.Null(previous.Interface);
     }
 }
+

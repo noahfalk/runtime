@@ -57,9 +57,9 @@ public static partial class MockDescriptors
         public HashMap(MockMemorySpace.Builder builder, (ulong Start, ulong End) allocationRange)
         {
             Builder = builder;
-            _allocator = Builder.CreateAllocator(allocationRange.Start, allocationRange.End);
-            Types = GetTypes(builder.TargetTestHelpers);
-            Globals = GetGlobals(builder.TargetTestHelpers);
+            _allocator = Builder.CreateUntrackedAllocator(allocationRange.Start, allocationRange.End);
+            Types = GetTypes((TargetTestHelpers)builder.TargetTestHelpers);
+            Globals = GetGlobals((TargetTestHelpers)builder.TargetTestHelpers);
         }
 
         internal static Dictionary<DataType, Target.TypeInfo> GetTypes(TargetTestHelpers helpers)
@@ -83,7 +83,7 @@ public static partial class MockDescriptors
         public TargetPointer CreateMap((TargetPointer Key, TargetPointer Value)[] entries)
         {
             Target.TypeInfo hashMapType = Types[DataType.HashMap];
-            MockMemorySpace.HeapFragment map = _allocator.Allocate(hashMapType.Size!.Value, "HashMap");
+            MockMemorySpace.HeapFragment map = _allocator.AllocateFragment(hashMapType.Size!.Value, "HashMap");
             Builder.AddHeapFragment(map);
             PopulateMap(map.Address, entries);
             return map.Address;
@@ -91,7 +91,7 @@ public static partial class MockDescriptors
 
         public void PopulateMap(TargetPointer mapAddress, (TargetPointer Key, TargetPointer Value)[] entries)
         {
-            TargetTestHelpers helpers = Builder.TargetTestHelpers;
+            TargetTestHelpers helpers = (TargetTestHelpers)Builder.TargetTestHelpers;
 
             // HashMap::NewSize
             int requiredSlots = entries.Length * 3 / 2;
@@ -104,7 +104,7 @@ public static partial class MockDescriptors
             // First bucket is the number of buckets
             uint numBuckets = size + 1;
             uint totalBucketsSize = bucketSize * numBuckets;
-            MockMemorySpace.HeapFragment buckets = _allocator.Allocate(totalBucketsSize, $"Buckets[{numBuckets}]");
+            MockMemorySpace.HeapFragment buckets = _allocator.AllocateFragment(totalBucketsSize, $"Buckets[{numBuckets}]");
             Builder.AddHeapFragment(buckets);
             helpers.Write(buckets.Data.AsSpan().Slice(0, sizeof(uint)), size);
 
@@ -154,7 +154,7 @@ public static partial class MockDescriptors
 
         private bool TryAddEntryToBucket(Span<byte> bucket, TargetPointer key, TargetPointer value)
         {
-            TargetTestHelpers helpers = Builder.TargetTestHelpers;
+            TargetTestHelpers helpers = (TargetTestHelpers)Builder.TargetTestHelpers;
             Target.TypeInfo bucketType = Types[DataType.Bucket];
             for (int i = 0; i < HashMapSlotsPerBucket; i++)
             {
@@ -184,3 +184,4 @@ public static partial class MockDescriptors
         }
     }
 }
+

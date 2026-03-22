@@ -13,7 +13,7 @@ public unsafe class SOSDacInterface8Tests
     private const int S_FALSE = 1;
     private const int E_FAIL = unchecked((int)0x80004005);
 
-    private static readonly GCHeapBuilder.GenerationInput[] s_generations =
+    private static readonly MockGCHeapBuilder.GenerationInput[] s_generations =
     [
         new() { StartSegment = 0x1A00_0000, AllocationStart = 0x1A00_1000, AllocContextPointer = 0x1A00_2000, AllocContextLimit = 0x1A00_3000 },
         new() { StartSegment = 0x1B00_0000, AllocationStart = 0x1B00_1000, AllocContextPointer = 0, AllocContextLimit = 0 },
@@ -25,27 +25,31 @@ public unsafe class SOSDacInterface8Tests
 
     private static ISOSDacInterface8 CreateWksDac8(MockTarget.Architecture arch)
     {
+        MockProcess process = new MockProcessBuilder(arch)
+            .AddGCHeapWks(gc =>
+            {
+                gc.Generations = s_generations;
+                gc.FillPointers = s_fillPointers;
+            })
+            .Build();
+
         return new SOSDacImpl(
-            new TestPlaceholderTarget.Builder(arch)
-                .AddGCHeapWks(gc =>
-                {
-                    gc.Generations = s_generations;
-                    gc.FillPointers = s_fillPointers;
-                })
-                .Build(),
+            process.CreateContractDescriptorTarget(),
             legacyObj: null);
     }
 
     private static ISOSDacInterface8 CreateSvrDac8(MockTarget.Architecture arch, out ulong heapAddr)
     {
+        MockProcess process = new MockProcessBuilder(arch)
+            .AddGCHeapSvr(gc =>
+            {
+                gc.Generations = s_generations;
+                gc.FillPointers = s_fillPointers;
+            }, out heapAddr)
+            .Build();
+
         return new SOSDacImpl(
-            new TestPlaceholderTarget.Builder(arch)
-                .AddGCHeapSvr(gc =>
-                {
-                    gc.Generations = s_generations;
-                    gc.FillPointers = s_fillPointers;
-                }, out heapAddr)
-                .Build(),
+            process.CreateContractDescriptorTarget(),
             legacyObj: null);
     }
 
@@ -73,7 +77,7 @@ public unsafe class SOSDacInterface8Tests
     [ClassData(typeof(MockTarget.StdArch))]
     public void GetNumberGenerations_WithFiveGenerations(MockTarget.Architecture arch)
     {
-        var fiveGenerations = new GCHeapBuilder.GenerationInput[]
+        var fiveGenerations = new MockGCHeapBuilder.GenerationInput[]
         {
             new() { StartSegment = 0xA000_0000, AllocationStart = 0xA000_1000, AllocContextPointer = 0xA000_2000, AllocContextLimit = 0xA000_3000 },
             new() { StartSegment = 0xB000_0000, AllocationStart = 0xB000_1000, AllocContextPointer = 0, AllocContextLimit = 0 },
@@ -82,15 +86,15 @@ public unsafe class SOSDacInterface8Tests
             new() { StartSegment = 0xE000_0000, AllocationStart = 0xE000_1000, AllocContextPointer = 0, AllocContextLimit = 0 },
         };
 
-        ISOSDacInterface8 dac8 = new SOSDacImpl(
-            new TestPlaceholderTarget.Builder(arch)
-                .AddGCHeapWks(gc =>
-                {
-                    gc.Generations = fiveGenerations;
-                    gc.FillPointers = s_fillPointers;
-                })
-                .Build(),
-            legacyObj: null);
+        MockProcess process = new MockProcessBuilder(arch)
+            .AddGCHeapWks(gc =>
+            {
+                gc.Generations = fiveGenerations;
+                gc.FillPointers = s_fillPointers;
+            })
+            .Build();
+
+        ISOSDacInterface8 dac8 = new SOSDacImpl(process.CreateContractDescriptorTarget(), legacyObj: null);
 
         uint numGenerations;
         int hr = dac8.GetNumberGenerations(&numGenerations);

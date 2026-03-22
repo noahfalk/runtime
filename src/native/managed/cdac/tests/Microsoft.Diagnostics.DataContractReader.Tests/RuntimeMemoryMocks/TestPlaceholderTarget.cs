@@ -53,60 +53,66 @@ public class TestPlaceholderTarget : Target
     /// </summary>
     public class Builder
     {
-        private readonly MockTarget.Architecture _arch;
-        private readonly MockMemorySpace.Builder _memBuilder;
-        private readonly Dictionary<DataType, Target.TypeInfo> _types = new();
-        private readonly List<(string Name, ulong Value)> _globals = new();
-        private readonly List<(string Name, string Value)> _globalStrings = new();
-        private readonly List<(Type Type, Func<Target, IContract> Factory)> _contractFactories = new();
+        private readonly MockProcessBuilder _snapshotBuilder;
+        private readonly CdacAdapterState _adapterState;
 
         public Builder(MockTarget.Architecture arch)
+            : this(new MockProcessBuilder(arch, new TargetTestHelpers(arch)))
         {
-            _arch = arch;
-            _memBuilder = new MockMemorySpace.Builder(new TargetTestHelpers(arch));
         }
 
-        internal MockMemorySpace.Builder MemoryBuilder => _memBuilder;
+        internal Builder(MockProcessBuilder snapshotBuilder)
+        {
+            _snapshotBuilder = snapshotBuilder;
+            _adapterState = new CdacAdapterState();
+        }
+
+        internal MockProcessBuilder SnapshotBuilder => _snapshotBuilder;
+        internal MockMemorySpace.Builder MemoryBuilder => _snapshotBuilder.MemoryBuilder;
+        internal TargetTestHelpers TargetTestHelpers => new(_snapshotBuilder.Architecture);
 
         public Builder AddTypes(Dictionary<DataType, Target.TypeInfo> types)
         {
             foreach (var kvp in types)
-                _types[kvp.Key] = kvp.Value;
+                _adapterState.Types[kvp.Key] = kvp.Value;
             return this;
         }
 
         public Builder AddGlobals(params (string Name, ulong Value)[] globals)
         {
-            _globals.AddRange(globals);
+            _adapterState.Globals.AddRange(globals);
             return this;
         }
 
         public Builder AddGlobalStrings(params (string Name, string Value)[] globalStrings)
         {
-            _globalStrings.AddRange(globalStrings);
+            _adapterState.GlobalStrings.AddRange(globalStrings);
             return this;
         }
 
         public Builder AddContract<TContract>(Func<Target, TContract> factory) where TContract : IContract
         {
-            _contractFactories.Add((typeof(TContract), target => factory(target)));
+            _adapterState.ContractFactories.Add((typeof(TContract), target => factory(target)));
             return this;
         }
 
         public TestPlaceholderTarget Build()
         {
-            var target = new TestPlaceholderTarget(
-                _arch,
-                _memBuilder.GetMemoryContext().ReadFromTarget,
-                _types,
-                _globals.ToArray(),
-                _globalStrings.ToArray());
+            MockProcess process = _snapshotBuilder.Build();
+            TestPlaceholderTarget target = new(
+                process.Architecture,
+                process.ReadFromTarget,
+                _adapterState.Types,
+                [.. _adapterState.Globals],
+                [.. _adapterState.GlobalStrings]);
 
-            var registry = new TestContractRegistry();
-            foreach (var (type, factory) in _contractFactories)
+            TestContractRegistry registry = new();
+            foreach ((Type type, Func<Target, IContract> factory) in _adapterState.ContractFactories)
+            {
                 registry.Add(type, new Lazy<IContract>(() => factory(target)));
-            target.SetContracts(registry);
+            }
 
+            target.SetContracts(registry);
             return target;
         }
     }
@@ -440,7 +446,7 @@ public class TestPlaceholderTarget : Target
         }
     }
 
-    private sealed class TestContractRegistry : ContractRegistry
+    internal sealed class TestContractRegistry : ContractRegistry
     {
         private readonly Dictionary<Type, Lazy<IContract>> _contracts = new();
 

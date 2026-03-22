@@ -66,7 +66,7 @@ public static partial class MockDescriptors
             {
                 _topLevelAddress = topLevelAddress;
                 _builder = builder;
-                _targetTestHelpers = builder.TargetTestHelpers;
+                _targetTestHelpers = (TargetTestHelpers)builder.TargetTestHelpers;
                 var arch = _targetTestHelpers.Arch;
                 _levels = arch.Is64Bit ? 5 : 2;
                 _maxSetBit = arch.Is64Bit ? 56 : 31; // 0 indexed
@@ -298,27 +298,26 @@ public static partial class MockDescriptors
             Builder = builder;
             _rsmBuilder = new RangeSectionMapTestBuilder(ExecutionManagerCodeRangeMapAddress, builder);
             _rfBuilder = new RuntimeFunctions(builder);
-            _rangeSectionMapAllocator = Builder.CreateAllocator(allocationRange.RangeSectionMapStart, allocationRange.RangeSectionMapEnd);
-            _nibbleMapAllocator = Builder.CreateAllocator(allocationRange.NibbleMapStart, allocationRange.NibbleMapEnd);
-            _allocator = Builder.CreateAllocator(allocationRange.ExecutionManagerStart, allocationRange.ExecutionManagerEnd);
-            Types = MockDescriptors.GetTypesForTypeFields(
-                Builder.TargetTestHelpers,
+            _rangeSectionMapAllocator = Builder.CreateUntrackedAllocator(allocationRange.RangeSectionMapStart, allocationRange.RangeSectionMapEnd);
+            _nibbleMapAllocator = Builder.CreateUntrackedAllocator(allocationRange.NibbleMapStart, allocationRange.NibbleMapEnd);
+            _allocator = Builder.CreateUntrackedAllocator(allocationRange.ExecutionManagerStart, allocationRange.ExecutionManagerEnd);
+            Types = MockDescriptors.GetTypesForTypeFields((TargetTestHelpers)Builder.TargetTestHelpers,
                 [
                     RangeSectionMapFields,
                     RangeSectionFragmentFields,
                     RangeSectionFields,
                     CodeHeapListNodeFields,
                     RealCodeHeaderFields,
-                    ReadyToRunInfoFields(Builder.TargetTestHelpers),
+                    ReadyToRunInfoFields((TargetTestHelpers)Builder.TargetTestHelpers),
                     MockDescriptors.ModuleFields,
                     EEJitManagerFields,
-                ]).Concat(MockDescriptors.HashMap.GetTypes(Builder.TargetTestHelpers))
+                ]).Concat(MockDescriptors.HashMap.GetTypes((TargetTestHelpers)Builder.TargetTestHelpers))
                 .Concat(_rfBuilder.Types)
                 .ToDictionary();
 
             // Allocate and populate the EEJitManager instance
             var jitManagerTypeInfo = Types[DataType.EEJitManager];
-            MockMemorySpace.HeapFragment eeJitManagerFragment = _allocator.Allocate(jitManagerTypeInfo.Size.Value, "EEJitManager");
+            MockMemorySpace.HeapFragment eeJitManagerFragment = _allocator.AllocateFragment(jitManagerTypeInfo.Size.Value, "EEJitManager");
             Builder.AddHeapFragment(eeJitManagerFragment);
             EEJitManagerAddress = eeJitManagerFragment.Address;
             int pointerSize = Builder.TargetTestHelpers.PointerSize;
@@ -326,7 +325,7 @@ public static partial class MockDescriptors
             Builder.TargetTestHelpers.WritePointer(jmData.Slice(jitManagerTypeInfo.Fields[nameof(Data.EEJitManager.AllCodeHeaps)].Offset, pointerSize), allCodeHeaps);
 
             // Allocate the global pointer that holds the EEJitManager address
-            MockMemorySpace.HeapFragment eeJitManagerGlobalPointer = _allocator.Allocate((ulong)pointerSize, "EEJitManagerGlobalPointer");
+            MockMemorySpace.HeapFragment eeJitManagerGlobalPointer = _allocator.AllocateFragment((ulong)pointerSize, "EEJitManagerGlobalPointer");
             Builder.AddHeapFragment(eeJitManagerGlobalPointer);
             Builder.TargetTestHelpers.WritePointer(eeJitManagerGlobalPointer.Data, EEJitManagerAddress);
 
@@ -337,7 +336,7 @@ public static partial class MockDescriptors
                 (nameof(Constants.Globals.EEJitManagerAddress), eeJitManagerGlobalPointer.Address),
             ];
             Globals = Globals
-                .Concat(MockDescriptors.HashMap.GetGlobals(Builder.TargetTestHelpers))
+                .Concat(MockDescriptors.HashMap.GetGlobals((TargetTestHelpers)Builder.TargetTestHelpers))
                 .ToArray();
         }
 
@@ -366,7 +365,7 @@ public static partial class MockDescriptors
 
         public JittedCodeRange AllocateJittedCodeRange(ulong codeRangeStart, uint codeRangeSize)
         {
-            MockMemorySpace.BumpAllocator allocator = Builder.CreateAllocator(codeRangeStart, codeRangeStart + codeRangeSize, minAlign: 1);
+            MockMemorySpace.BumpAllocator allocator = Builder.CreateUntrackedAllocator(codeRangeStart, codeRangeStart + codeRangeSize, minAlign: 1);
             return new JittedCodeRange { Allocator = allocator };
         }
 
@@ -374,7 +373,7 @@ public static partial class MockDescriptors
         {
             var tyInfo = Types[DataType.RangeSection];
             uint rangeSectionSize = tyInfo.Size.Value;
-            MockMemorySpace.HeapFragment rangeSection = _rangeSectionMapAllocator.Allocate(rangeSectionSize, "RangeSection");
+            MockMemorySpace.HeapFragment rangeSection = _rangeSectionMapAllocator.AllocateFragment(rangeSectionSize, "RangeSection");
             Builder.AddHeapFragment(rangeSection);
             int pointerSize = Builder.TargetTestHelpers.PointerSize;
             Span<byte> rs = Builder.BorrowAddressRange(rangeSection.Address, (int)rangeSectionSize);
@@ -393,7 +392,7 @@ public static partial class MockDescriptors
         {
             var tyInfo = Types[DataType.RangeSection];
             uint rangeSectionSize = tyInfo.Size.Value;
-            MockMemorySpace.HeapFragment rangeSection = _rangeSectionMapAllocator.Allocate(rangeSectionSize, "RangeSection");
+            MockMemorySpace.HeapFragment rangeSection = _rangeSectionMapAllocator.AllocateFragment(rangeSectionSize, "RangeSection");
             Builder.AddHeapFragment(rangeSection);
             int pointerSize = Builder.TargetTestHelpers.PointerSize;
             Span<byte> rs = Builder.BorrowAddressRange(rangeSection.Address, (int)rangeSectionSize);
@@ -423,7 +422,7 @@ public static partial class MockDescriptors
         {
             var tyInfo = Types[DataType.RangeSectionFragment];
             uint rangeSectionFragmentSize = tyInfo.Size.Value;
-            MockMemorySpace.HeapFragment rangeSectionFragment = _rangeSectionMapAllocator.Allocate(rangeSectionFragmentSize, "RangeSectionFragment");
+            MockMemorySpace.HeapFragment rangeSectionFragment = _rangeSectionMapAllocator.AllocateFragment(rangeSectionFragmentSize, "RangeSectionFragment");
             if (insertIntoMap)
             {
                 // FIXME: this shouldn't really be called InsertAddressRange, but maybe InsertRangeSectionFragment?
@@ -455,7 +454,7 @@ public static partial class MockDescriptors
         {
             var tyInfo = Types[DataType.RangeSectionFragment];
             uint rangeSectionFragmentSize = tyInfo.Size.Value;
-            MockMemorySpace.HeapFragment rangeSectionFragment = _rangeSectionMapAllocator.Allocate(rangeSectionFragmentSize, "RangeSectionFragment (collectible head)");
+            MockMemorySpace.HeapFragment rangeSectionFragment = _rangeSectionMapAllocator.AllocateFragment(rangeSectionFragmentSize, "RangeSectionFragment (collectible head)");
             // Insert this fragment into the map, overriding any existing entry for the range
             _rsmBuilder.InsertAddressRange(mapCodeRange.RangeStart, (uint)mapCodeRange.RangeSize, rangeSectionFragment.Address);
             Builder.AddHeapFragment(rangeSectionFragment);
@@ -472,7 +471,7 @@ public static partial class MockDescriptors
         {
             var tyInfo = Types[DataType.CodeHeapListNode];
             uint codeHeapListNodeSize = tyInfo.Size.Value;
-            MockMemorySpace.HeapFragment codeHeapListNode = _rangeSectionMapAllocator.Allocate(codeHeapListNodeSize, "CodeHeapListNode");
+            MockMemorySpace.HeapFragment codeHeapListNode = _rangeSectionMapAllocator.AllocateFragment(codeHeapListNodeSize, "CodeHeapListNode");
             Builder.AddHeapFragment(codeHeapListNode);
             int pointerSize = Builder.TargetTestHelpers.PointerSize;
             Span<byte> chln = Builder.BorrowAddressRange(codeHeapListNode.Address, (int)codeHeapListNodeSize);
@@ -492,7 +491,7 @@ public static partial class MockDescriptors
         private (MockMemorySpace.HeapFragment fragment, TargetCodePointer codeStart) AllocateJittedMethod(JittedCodeRange jittedCodeRange, uint codeSize, string name = "Method Header & Code")
         {
             ulong size = codeSize + CodeHeaderOffset;
-            MockMemorySpace.HeapFragment methodFragment = jittedCodeRange.Allocator.Allocate(size, name);
+            MockMemorySpace.HeapFragment methodFragment = jittedCodeRange.Allocator.AllocateFragment(size, name);
             Builder.AddHeapFragment(methodFragment);
             TargetCodePointer codeStart = methodFragment.Address + CodeHeaderOffset;
             return (methodFragment, codeStart);
@@ -502,7 +501,7 @@ public static partial class MockDescriptors
         {
             (MockMemorySpace.HeapFragment methodFragment, TargetCodePointer codeStart) = AllocateJittedMethod(jittedCodeRange, codeSize);
 
-            MockMemorySpace.HeapFragment codeHeaderFragment = _allocator.Allocate(RealCodeHeaderSize, "RealCodeHeader");
+            MockMemorySpace.HeapFragment codeHeaderFragment = _allocator.AllocateFragment(RealCodeHeaderSize, "RealCodeHeader");
             Builder.AddHeapFragment(codeHeaderFragment);
 
             Span<byte> mfPtr = Builder.BorrowAddressRange(methodFragment.Address, (int)CodeHeaderSize);
@@ -524,7 +523,7 @@ public static partial class MockDescriptors
 
         public TargetPointer AddReadyToRunInfo(uint[] runtimeFunctions, uint[] hotColdMap)
         {
-            TargetTestHelpers helpers = Builder.TargetTestHelpers;
+            TargetTestHelpers helpers = (TargetTestHelpers)Builder.TargetTestHelpers;
 
             // Add the array of runtime functions
             uint numRuntimeFunctions = (uint)runtimeFunctions.Length;
@@ -534,7 +533,7 @@ public static partial class MockDescriptors
             TargetPointer hotColdMapAddr = TargetPointer.Null;
             if (hotColdMap.Length > 0)
             {
-                MockMemorySpace.HeapFragment hotColdMapFragment = _allocator.Allocate((ulong)hotColdMap.Length * sizeof(uint), $"HotColdMap[{hotColdMap.Length}]");
+                MockMemorySpace.HeapFragment hotColdMapFragment = _allocator.AllocateFragment((ulong)hotColdMap.Length * sizeof(uint), $"HotColdMap[{hotColdMap.Length}]");
                 Builder.AddHeapFragment(hotColdMapFragment);
                 hotColdMapAddr = hotColdMapFragment.Address;
                 for (uint i = 0; i < hotColdMap.Length; i++)
@@ -546,7 +545,7 @@ public static partial class MockDescriptors
 
             // Add ReadyToRunInfo
             Target.TypeInfo r2rInfoType = Types[DataType.ReadyToRunInfo];
-            MockMemorySpace.HeapFragment r2rInfo = _allocator.Allocate(r2rInfoType.Size.Value, "ReadyToRunInfo");
+            MockMemorySpace.HeapFragment r2rInfo = _allocator.AllocateFragment(r2rInfoType.Size.Value, "ReadyToRunInfo");
             Builder.AddHeapFragment(r2rInfo);
             Span<byte> data = r2rInfo.Data;
 
@@ -566,10 +565,10 @@ public static partial class MockDescriptors
 
         public TargetPointer AddReadyToRunModule(TargetPointer r2rInfo)
         {
-            TargetTestHelpers helpers = Builder.TargetTestHelpers;
+            TargetTestHelpers helpers = (TargetTestHelpers)Builder.TargetTestHelpers;
 
             Target.TypeInfo moduleType = Types[DataType.Module];
-            MockMemorySpace.HeapFragment r2rModule = _allocator.Allocate(moduleType.Size.Value, "R2R Module");
+            MockMemorySpace.HeapFragment r2rModule = _allocator.AllocateFragment(moduleType.Size.Value, "R2R Module");
             Builder.AddHeapFragment(r2rModule);
             helpers.WritePointer(r2rModule.Data.AsSpan().Slice(moduleType.Fields[nameof(Data.Module.ReadyToRunInfo)].Offset, helpers.PointerSize), r2rInfo);
 
@@ -577,3 +576,4 @@ public static partial class MockDescriptors
         }
     }
 }
+

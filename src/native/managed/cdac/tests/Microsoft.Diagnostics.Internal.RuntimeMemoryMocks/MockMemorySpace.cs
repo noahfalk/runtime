@@ -8,8 +8,6 @@ using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Text;
 
-using Microsoft.Diagnostics.DataContractReader;
-
 namespace Microsoft.Diagnostics.Internal.RuntimeMemoryMocks;
 
 /// <summary>
@@ -20,10 +18,10 @@ namespace Microsoft.Diagnostics.Internal.RuntimeMemoryMocks;
 /// </remarks>
 public static unsafe partial class MockMemorySpace
 {
-    public struct HeapFragment
+    public sealed class HeapFragment
     {
         public ulong Address;
-        public byte[] Data;
+        public required byte[] Data;
         public string? Name;
     }
 
@@ -35,18 +33,18 @@ public static unsafe partial class MockMemorySpace
         private readonly List<HeapFragment> _heapFragments = new();
         private readonly List<BumpAllocator> _allocators = new();
 
-        private TargetTestHelpers _targetTestHelpers;
+        private MockMemoryHelpers _targetTestHelpers;
 
-        public Builder(TargetTestHelpers targetTestHelpers)
+        public Builder(MockMemoryHelpers targetTestHelpers)
         {
             _targetTestHelpers = targetTestHelpers;
         }
 
-        internal TargetTestHelpers TargetTestHelpers => _targetTestHelpers;
+        internal MockMemoryHelpers TargetTestHelpers => _targetTestHelpers;
 
         internal Span<byte> BorrowAddressRange(ulong address, int length)
         {
-            foreach (var fragment in _heapFragments)
+            foreach (HeapFragment fragment in GetAllHeapFragments())
             {
                 if (address >= fragment.Address && address + (ulong)length <= fragment.Address + (ulong)fragment.Data.Length)
                     return fragment.Data.AsSpan((int)(address - fragment.Address), length);
@@ -58,16 +56,16 @@ public static unsafe partial class MockMemorySpace
         {
             if (fragment.Data is null || fragment.Data.Length == 0)
                 throw new InvalidOperationException($"Fragment '{fragment.Name}' data is empty");
-            if (!FragmentFits(fragment))
-                throw new InvalidOperationException($"Fragment '{fragment.Name}' does not fit in the address space. Overlaps with existing fragments.\n{GetHeapFragmentsDescription()}");
+            if (!FragmentFits(fragment, GetKnownHeapFragments()))
+                throw new InvalidOperationException($"Fragment '{fragment.Name}' does not fit in the address space. Overlaps with existing fragments.\n{GetHeapFragmentsDescription(GetKnownHeapFragments())}");
             _heapFragments.Add(fragment);
             return this;
         }
 
-        private string GetHeapFragmentsDescription()
+        private static string GetHeapFragmentsDescription(IEnumerable<HeapFragment> fragments)
         {
             StringBuilder builder = new();
-            foreach (var fragment in _heapFragments)
+            foreach (HeapFragment fragment in fragments)
             {
                 builder.AppendLine($"Fragment '{fragment.Name}' at 0x{fragment.Address:x} with length {fragment.Data.Length}");
             }
@@ -88,20 +86,25 @@ public static unsafe partial class MockMemorySpace
         {
             MemoryContext context = new MemoryContext
             {
-                HeapFragments = _heapFragments,
+                HeapFragments = GetAllHeapFragments(),
             };
             return context;
         }
 
-        private bool FragmentFits(HeapFragment f)
+        private static bool FragmentFits(HeapFragment fragmentToAdd, IEnumerable<HeapFragment> existingFragments)
         {
-            foreach (var fragment in _heapFragments)
+            foreach (HeapFragment fragment in existingFragments)
             {
+                if (ReferenceEquals(fragmentToAdd, fragment))
+                {
+                    continue;
+                }
+
                 // f and fragment overlap if either:
                 // 1. f starts before fragment starts and ends after fragment starts
                 // 2. f starts before fragment ends
-                if ((f.Address <= fragment.Address && f.Address + (ulong)f.Data.Length > fragment.Address) ||
-                    (f.Address >= fragment.Address && f.Address < fragment.Address + (ulong)fragment.Data.Length))
+                if ((fragmentToAdd.Address <= fragment.Address && fragmentToAdd.Address + (ulong)fragmentToAdd.Data.Length > fragment.Address) ||
+                    (fragmentToAdd.Address >= fragment.Address && fragmentToAdd.Address < fragment.Address + (ulong)fragment.Data.Length))
                 {
                     return false;
                 }
@@ -112,15 +115,71 @@ public static unsafe partial class MockMemorySpace
 
         // Get an allocator for a range of addresses to simplify creating heap fragments
         public BumpAllocator CreateAllocator(ulong start, ulong end, int minAlign = 16)
+            => CreateAllocator(start, end, tracksAllocatedFragments: true, minAlign);
+
+        public BumpAllocator CreateUntrackedAllocator(ulong start, ulong end, int minAlign = 16)
+            => CreateAllocator(start, end, tracksAllocatedFragments: false, minAlign);
+
+        private BumpAllocator CreateAllocator(ulong start, ulong end, bool tracksAllocatedFragments, int minAlign)
         {
-            BumpAllocator allocator = new BumpAllocator(start, end) { MinAlign = minAlign };
-            foreach (var a in _allocators)
+            BumpAllocator allocator = new BumpAllocator(start, end, _targetTestHelpers.Arch, tracksAllocatedFragments) { MinAlign = (ulong)minAlign };
+            foreach (BumpAllocator a in _allocators)
             {
                 if (allocator.Overlaps(a))
                     throw new InvalidOperationException($"Requested range (0x{start:x}, 0x{end:x}) overlaps with existing allocator (0x{a.RangeStart:x}, 0x{a.RangeEnd:x})");
             }
             _allocators.Add(allocator);
             return allocator;
+        }
+
+        private List<HeapFragment> GetAllHeapFragments()
+        {
+            List<HeapFragment> fragments = [.. _heapFragments];
+            foreach (HeapFragment fragment in EnumerateTrackedAllocatorFragments())
+            {
+                if (fragments.Contains(fragment))
+                {
+                    continue;
+                }
+
+                if (!FragmentFits(fragment, fragments))
+                {
+                    throw new InvalidOperationException($"Tracked fragment '{fragment.Name}' does not fit in the address space. Overlaps with existing fragments.\n{GetHeapFragmentsDescription(fragments)}");
+                }
+
+                fragments.Add(fragment);
+            }
+
+            return fragments;
+        }
+
+        private IEnumerable<HeapFragment> GetKnownHeapFragments()
+        {
+            foreach (HeapFragment fragment in _heapFragments)
+            {
+                yield return fragment;
+            }
+
+            foreach (HeapFragment fragment in EnumerateTrackedAllocatorFragments())
+            {
+                yield return fragment;
+            }
+        }
+
+        private IEnumerable<HeapFragment> EnumerateTrackedAllocatorFragments()
+        {
+            foreach (BumpAllocator allocator in _allocators)
+            {
+                if (!allocator.TracksAllocatedFragments)
+                {
+                    continue;
+                }
+
+                foreach (HeapFragment fragment in allocator.Allocations)
+                {
+                    yield return fragment;
+                }
+            }
         }
     }
 
@@ -138,7 +197,7 @@ public static unsafe partial class MockMemorySpace
                 return -1;
 
             bool partialReadOcurred = false;
-            HeapFragment lastHeapFragment = default;
+            HeapFragment? lastHeapFragment = null;
             int availableLength = 0;
             while (true)
             {
@@ -171,7 +230,7 @@ public static unsafe partial class MockMemorySpace
             }
 
             if (partialReadOcurred)
-                throw new InvalidOperationException($"Not enough data in fragment at {lastHeapFragment.Address:X} ('{lastHeapFragment.Name}') to read {buffer.Length} bytes at {address:X} (only {availableLength} bytes available)");
+                throw new InvalidOperationException($"Not enough data in fragment at {lastHeapFragment!.Address:X} ('{lastHeapFragment.Name}') to read {buffer.Length} bytes at {address:X} (only {availableLength} bytes available)");
             return -1;
         }
 
@@ -184,7 +243,7 @@ public static unsafe partial class MockMemorySpace
                 return -1;
 
             bool partialWriteOccurred = false;
-            HeapFragment lastHeapFragment = default;
+            HeapFragment? lastHeapFragment = null;
             int availableLength = 0;
             while (true)
             {
@@ -220,7 +279,7 @@ public static unsafe partial class MockMemorySpace
             }
 
             if (partialWriteOccurred)
-                throw new InvalidOperationException($"Not enough space in fragment at {lastHeapFragment.Address:X} ('{lastHeapFragment.Name}') to write {buffer.Length} bytes at {address:X} (only {availableLength} bytes available)");
+                throw new InvalidOperationException($"Not enough space in fragment at {lastHeapFragment!.Address:X} ('{lastHeapFragment.Name}') to write {buffer.Length} bytes at {address:X} (only {availableLength} bytes available)");
             return -1;
         }
     }

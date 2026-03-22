@@ -99,16 +99,16 @@ public static partial class MockDescriptors
         public RuntimeTypeSystem(MockMemorySpace.Builder builder, (ulong Start, ulong End) allocationRange)
         {
             Builder = builder;
-            TypeSystemAllocator = builder.CreateAllocator(allocationRange.Start, allocationRange.End);
+            TypeSystemAllocator = builder.CreateUntrackedAllocator(allocationRange.Start, allocationRange.End);
 
-            Types = GetTypes(Builder.TargetTestHelpers);
+            Types = GetTypes((TargetTestHelpers)Builder.TargetTestHelpers);
 
             AddGlobalPointers();
             Globals =
             [
                 (nameof(Constants.Globals.FreeObjectMethodTable), TestFreeObjectMethodTableGlobalAddress),
                 (nameof(Constants.Globals.ContinuationMethodTable), TestContinuationMethodTableGlobalAddress),
-                (nameof(Constants.Globals.MethodDescAlignment), GetMethodDescAlignment(Builder.TargetTestHelpers)),
+                (nameof(Constants.Globals.MethodDescAlignment), GetMethodDescAlignment((TargetTestHelpers)Builder.TargetTestHelpers)),
                 (nameof(Constants.Globals.ArrayBaseSize), Builder.TargetTestHelpers.ArrayBaseBaseSize),
             ];
         }
@@ -122,11 +122,11 @@ public static partial class MockDescriptors
         private void AddFreeObjectMethodTable()
         {
             Target.TypeInfo methodTableTypeInfo = Types[DataType.MethodTable];
-            MockMemorySpace.HeapFragment freeObjectMethodTableFragment = TypeSystemAllocator.Allocate(methodTableTypeInfo.Size.Value, "Free Object Method Table");
+            MockMemorySpace.HeapFragment freeObjectMethodTableFragment = TypeSystemAllocator.AllocateFragment(methodTableTypeInfo.Size.Value, "Free Object Method Table");
             Builder.AddHeapFragment(freeObjectMethodTableFragment);
             FreeObjectMethodTableAddress = freeObjectMethodTableFragment.Address;
 
-            TargetTestHelpers targetTestHelpers = Builder.TargetTestHelpers;
+            TargetTestHelpers targetTestHelpers = (TargetTestHelpers)Builder.TargetTestHelpers;
             MockMemorySpace.HeapFragment globalAddr = new() { Name = "Address of Free Object Method Table", Address = TestFreeObjectMethodTableGlobalAddress, Data = new byte[targetTestHelpers.PointerSize] };
             targetTestHelpers.WritePointer(globalAddr.Data, FreeObjectMethodTableAddress);
             Builder.AddHeapFragment(globalAddr);
@@ -135,7 +135,7 @@ public static partial class MockDescriptors
         private void AddContinuationMethodTableGlobal()
         {
             // Initially the continuation method table global points to null (no continuations created yet)
-            TargetTestHelpers targetTestHelpers = Builder.TargetTestHelpers;
+            TargetTestHelpers targetTestHelpers = (TargetTestHelpers)Builder.TargetTestHelpers;
             MockMemorySpace.HeapFragment globalAddr = new() { Name = "Address of Continuation Method Table", Address = TestContinuationMethodTableGlobalAddress, Data = new byte[targetTestHelpers.PointerSize] };
             targetTestHelpers.WritePointer(globalAddr.Data, TargetPointer.Null);
             Builder.AddHeapFragment(globalAddr);
@@ -144,7 +144,7 @@ public static partial class MockDescriptors
 
         internal void SetContinuationMethodTable(TargetPointer continuationMethodTable)
         {
-            TargetTestHelpers targetTestHelpers = Builder.TargetTestHelpers;
+            TargetTestHelpers targetTestHelpers = (TargetTestHelpers)Builder.TargetTestHelpers;
             Span<byte> globalAddrBytes = Builder.BorrowAddressRange(TestContinuationMethodTableGlobalAddress, targetTestHelpers.PointerSize);
             targetTestHelpers.WritePointer(globalAddrBytes, continuationMethodTable);
             ContinuationMethodTableAddress = continuationMethodTable;
@@ -178,9 +178,9 @@ public static partial class MockDescriptors
         {
             Target.TypeInfo eeClassTypeInfo  = Types[DataType.EEClass];
             MockMemorySpace.Builder builder = Builder;
-            TargetTestHelpers targetTestHelpers = builder.TargetTestHelpers;
+            TargetTestHelpers targetTestHelpers = (TargetTestHelpers)builder.TargetTestHelpers;
 
-            MockMemorySpace.HeapFragment eeClassFragment = TypeSystemAllocator.Allocate(eeClassTypeInfo.Size.Value, $"EEClass '{name}'");
+            MockMemorySpace.HeapFragment eeClassFragment = TypeSystemAllocator.AllocateFragment(eeClassTypeInfo.Size.Value, $"EEClass '{name}'");
             Span<byte> dest = eeClassFragment.Data;
             targetTestHelpers.Write(dest.Slice(eeClassTypeInfo.Fields[nameof(Data.EEClass.CorTypeAttr)].Offset), attr);
             targetTestHelpers.Write(dest.Slice(eeClassTypeInfo.Fields[nameof(Data.EEClass.NumMethods)].Offset), numMethods);
@@ -194,8 +194,8 @@ public static partial class MockDescriptors
         {
             Target.TypeInfo methodTableTypeInfo = Types[DataType.MethodTable];
             MockMemorySpace.Builder builder = Builder;
-            TargetTestHelpers targetTestHelpers = builder.TargetTestHelpers;
-            MockMemorySpace.HeapFragment methodTableFragment = TypeSystemAllocator.Allocate(methodTableTypeInfo.Size.Value,  $"MethodTable '{name}'");
+            TargetTestHelpers targetTestHelpers = (TargetTestHelpers)builder.TargetTestHelpers;
+            MockMemorySpace.HeapFragment methodTableFragment = TypeSystemAllocator.AllocateFragment(methodTableTypeInfo.Size.Value,  $"MethodTable '{name}'");
             Span<byte> dest = methodTableFragment.Data;
             targetTestHelpers.Write(dest.Slice(methodTableTypeInfo.Fields[nameof(Data.MethodTable.MTFlags)].Offset), mtflags);
             targetTestHelpers.Write(dest.Slice(methodTableTypeInfo.Fields[nameof(Data.MethodTable.MTFlags2)].Offset), mtflags2);
@@ -214,7 +214,7 @@ public static partial class MockDescriptors
         {
             Target.TypeInfo methodTableTypeInfo = Types[DataType.MethodTable];
             Target.TypeInfo auxDataTypeInfo = Types[DataType.MethodTableAuxiliaryData];
-            MockMemorySpace.HeapFragment auxDataFragment = TypeSystemAllocator.Allocate(auxDataTypeInfo.Size.Value, "MethodTableAuxiliaryData");
+            MockMemorySpace.HeapFragment auxDataFragment = TypeSystemAllocator.AllocateFragment(auxDataTypeInfo.Size.Value, "MethodTableAuxiliaryData");
             Span<byte> dest = auxDataFragment.Data;
             Builder.TargetTestHelpers.WritePointer(dest.Slice(auxDataTypeInfo.Fields[nameof(Data.MethodTableAuxiliaryData.LoaderModule)].Offset), loaderModule);
             Builder.AddHeapFragment(auxDataFragment);
@@ -226,10 +226,10 @@ public static partial class MockDescriptors
         internal TargetPointer AddFunctionPointerTypeDesc(uint callConv, TargetPointer[] retAndArgTypes, TargetPointer loaderModule)
         {
             Target.TypeInfo typeInfo = Types[DataType.FnPtrTypeDesc];
-            TargetTestHelpers helpers = Builder.TargetTestHelpers;
+            TargetTestHelpers helpers = (TargetTestHelpers)Builder.TargetTestHelpers;
 
             ulong size = typeInfo.Size.Value + (ulong)(retAndArgTypes.Length * helpers.PointerSize);
-            MockMemorySpace.HeapFragment fragment = TypeSystemAllocator.Allocate(size, $"FnPtrTypeDesc");
+            MockMemorySpace.HeapFragment fragment = TypeSystemAllocator.AllocateFragment(size, $"FnPtrTypeDesc");
             Builder.AddHeapFragment(fragment);
             Span<byte> dest = fragment.Data;
             helpers.Write(dest.Slice(Types[DataType.TypeDesc].Fields[nameof(Data.TypeDesc.TypeAndFlags)].Offset), (uint)CorElementType.FnPtr);
@@ -252,9 +252,9 @@ public static partial class MockDescriptors
                 throw new ArgumentOutOfRangeException(nameof(typeAndFlags));
 
             Target.TypeInfo typeInfo = Types[DataType.ParamTypeDesc];
-            TargetTestHelpers helpers = Builder.TargetTestHelpers;
+            TargetTestHelpers helpers = (TargetTestHelpers)Builder.TargetTestHelpers;
 
-            MockMemorySpace.HeapFragment fragment = TypeSystemAllocator.Allocate(typeInfo.Size.Value, $"ParamTypeDesc");
+            MockMemorySpace.HeapFragment fragment = TypeSystemAllocator.AllocateFragment(typeInfo.Size.Value, $"ParamTypeDesc");
             Builder.AddHeapFragment(fragment);
             Span<byte> dest = fragment.Data;
             helpers.Write(dest.Slice(Types[DataType.TypeDesc].Fields[nameof(Data.TypeDesc.TypeAndFlags)].Offset), typeAndFlags);
@@ -269,9 +269,9 @@ public static partial class MockDescriptors
                 throw new ArgumentOutOfRangeException(nameof(typeAndFlags));
 
             Target.TypeInfo typeInfo = Types[DataType.TypeVarTypeDesc];
-            TargetTestHelpers helpers = Builder.TargetTestHelpers;
+            TargetTestHelpers helpers = (TargetTestHelpers)Builder.TargetTestHelpers;
 
-            MockMemorySpace.HeapFragment fragment = TypeSystemAllocator.Allocate(typeInfo.Size.Value, $"TypeVarTypeDesc");
+            MockMemorySpace.HeapFragment fragment = TypeSystemAllocator.AllocateFragment(typeInfo.Size.Value, $"TypeVarTypeDesc");
             Builder.AddHeapFragment(fragment);
             Span<byte> dest = fragment.Data;
             helpers.Write(dest.Slice(Types[DataType.TypeDesc].Fields[nameof(Data.TypeDesc.TypeAndFlags)].Offset), typeAndFlags);
@@ -281,3 +281,4 @@ public static partial class MockDescriptors
         }
     }
 }
+

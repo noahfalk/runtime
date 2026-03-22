@@ -93,15 +93,15 @@ and globals from each `Add*` call, and wires up contracts automatically at
 subsystem. The preferred pattern is an **extension method on
 `TestPlaceholderTarget.Builder`** that takes an `Action<ConfigObject>` parameter:
 
-1. A configuration class (e.g., `GCHeapBuilder`) accumulates test data via
+1. A configuration class (e.g., `MockGCHeapBuilder`) accumulates test data via
    fluent `Set*()` methods.
 2. The extension method allocates mock memory, registers types/globals/contracts
    directly on the target builder, and returns the builder for chaining.
 3. Unset arrays default to zero-length or zero-initialized so tests only
    configure the data they care about.
 
-See `MockDescriptors.GC.cs` for a complete example (`GCHeapBuilder` +
-`GCHeapBuilderExtensions`).
+See `MockDescriptors.GC.cs` for a complete example (`MockGCHeapBuilder` +
+`MockGCHeapBuilderExtensions`).
 
 ### Key patterns
 
