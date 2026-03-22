@@ -16,13 +16,16 @@ namespace Microsoft.Diagnostics.Internal.RuntimeMemoryMocks;
 /// <remarks>
 /// Use MockMemorySpace.Builder to create a context with MockMemorySpace.HeapFragment data.
 /// </remarks>
-public static unsafe partial class MockMemorySpace
-{
-    public sealed class HeapFragment
+    public static unsafe partial class MockMemorySpace
     {
-        public ulong Address;
-        public required byte[] Data;
-        public string? Name;
+        private const ulong DefaultAllocatorStart = 0x0100_0000;
+        private const ulong DefaultAllocatorEnd = 0x2000_0000;
+
+        public sealed class HeapFragment
+        {
+            public ulong Address;
+            public required byte[] Data;
+            public string? Name;
     }
 
     /// <summary>
@@ -34,6 +37,7 @@ public static unsafe partial class MockMemorySpace
         private readonly List<BumpAllocator> _allocators = new();
 
         private MockMemoryHelpers _targetTestHelpers;
+        private BumpAllocator? _defaultAllocator;
 
         public Builder(MockMemoryHelpers targetTestHelpers)
         {
@@ -41,6 +45,7 @@ public static unsafe partial class MockMemorySpace
         }
 
         internal MockMemoryHelpers TargetTestHelpers => _targetTestHelpers;
+        public BumpAllocator DefaultAllocator => _defaultAllocator ??= CreateAllocator(DefaultAllocatorStart, DefaultAllocatorEnd);
 
         internal Span<byte> BorrowAddressRange(ulong address, int length)
         {

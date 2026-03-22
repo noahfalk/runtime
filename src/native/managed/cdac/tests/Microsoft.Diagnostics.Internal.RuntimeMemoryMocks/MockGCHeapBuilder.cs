@@ -31,8 +31,6 @@ public sealed class MockGCHeapBuilder
 
 public static class MockGCHeapBuilderExtensions
 {
-    private const ulong DefaultAllocationRangeStart = 0x0010_0000;
-    private const ulong DefaultAllocationRangeEnd = 0x0020_0000;
     private const string GCContractName = "GC";
     private const string GCAllocContextTypeName = "GCAllocContext";
     private const string GenerationTypeName = "Generation";
@@ -232,7 +230,7 @@ public static class MockGCHeapBuilderExtensions
     {
         MockMemorySpace.Builder memoryBuilder = processBuilder.MemoryBuilder;
         MockTarget.Architecture architecture = processBuilder.Architecture;
-        MockMemorySpace.BumpAllocator allocator = memoryBuilder.CreateAllocator(DefaultAllocationRangeStart, DefaultAllocationRangeEnd);
+        MockMemorySpace.BumpAllocator allocator = memoryBuilder.DefaultAllocator;
         MockGCHeapBuilder.GenerationInput[] generations = config.Generations;
         uint generationCount = (uint)generations.Length;
         ulong[] fillPointers = config.FillPointers;
@@ -289,7 +287,7 @@ public static class MockGCHeapBuilderExtensions
     {
         MockMemorySpace.Builder memoryBuilder = processBuilder.MemoryBuilder;
         MockTarget.Architecture architecture = processBuilder.Architecture;
-        MockMemorySpace.BumpAllocator allocator = memoryBuilder.CreateAllocator(DefaultAllocationRangeStart, DefaultAllocationRangeEnd);
+        MockMemorySpace.BumpAllocator allocator = memoryBuilder.DefaultAllocator;
         ulong heapAddress = 0;
         MockGCHeapBuilder.GenerationInput[] generations = config.Generations;
         uint generationCount = (uint)generations.Length;
