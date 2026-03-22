@@ -351,4 +351,65 @@ public sealed class MockProcessBuilderTests
         Assert.Equal(2 * arch.PointerSize, interopSyncBlockInfo.Fields["CCF"].Offset);
     }
 
+    [Theory]
+    [ClassData(typeof(MockTarget.StdArch))]
+    public void AddThread_AddsExpectedTypesAndGlobals(MockTarget.Architecture arch)
+    {
+        MockThreadBuilder? threadBuilder = null;
+        MockProcess process = new MockProcessBuilder(arch)
+            .AddThread(config => threadBuilder = config)
+            .Build();
+
+        ContractDescriptorTarget target = process.CreateContractDescriptorTarget();
+        Assert.NotNull(threadBuilder);
+
+        Assert.Equal(threadBuilder.ThreadStoreGlobalAddress, target.ReadGlobal<ulong>("ThreadStore"));
+        Assert.Equal(threadBuilder.FinalizerThreadGlobalAddress, target.ReadGlobal<ulong>("FinalizerThread"));
+        Assert.Equal(threadBuilder.GCThreadGlobalAddress, target.ReadGlobal<ulong>("GCThread"));
+
+        Target.TypeInfo exceptionInfo = target.GetTypeInfo("ExceptionInfo");
+        Target.TypeInfo gcAllocContext = target.GetTypeInfo("GCAllocContext");
+        Target.TypeInfo eeAllocContext = target.GetTypeInfo("EEAllocContext");
+        Target.TypeInfo runtimeThreadLocals = target.GetTypeInfo("RuntimeThreadLocals");
+        Target.TypeInfo thread = target.GetTypeInfo("Thread");
+        Target.TypeInfo threadStore = target.GetTypeInfo("ThreadStore");
+
+        Assert.Equal(0, exceptionInfo.Fields["PreviousNestedInfo"].Offset);
+        Assert.Equal(arch.PointerSize, exceptionInfo.Fields["ThrownObjectHandle"].Offset);
+        Assert.Equal(2 * arch.PointerSize, exceptionInfo.Fields["ExceptionWatsonBucketTrackerBuckets"].Offset);
+
+        Assert.Equal(0, gcAllocContext.Fields["Pointer"].Offset);
+        Assert.Equal(arch.PointerSize, gcAllocContext.Fields["Limit"].Offset);
+        Assert.Equal(2 * arch.PointerSize, gcAllocContext.Fields["AllocBytes"].Offset);
+        Assert.Equal((arch.Is64Bit ? 24 : 16), gcAllocContext.Fields["AllocBytesLoh"].Offset);
+
+        Assert.Equal(0, eeAllocContext.Fields["GCAllocationContext"].Offset);
+        Assert.Equal("GCAllocContext", eeAllocContext.Fields["GCAllocationContext"].TypeName);
+
+        Assert.Equal(0, runtimeThreadLocals.Fields["AllocContext"].Offset);
+        Assert.Equal("EEAllocContext", runtimeThreadLocals.Fields["AllocContext"].TypeName);
+
+        Assert.Equal(0, thread.Fields["Id"].Offset);
+        Assert.Equal(arch.Is64Bit ? 8 : 4, thread.Fields["OSId"].Offset);
+        Assert.Equal(arch.Is64Bit ? 16 : 8, thread.Fields["State"].Offset);
+        Assert.Equal(arch.Is64Bit ? 20 : 12, thread.Fields["PreemptiveGCDisabled"].Offset);
+        Assert.Equal(arch.Is64Bit ? 24 : 16, thread.Fields["RuntimeThreadLocals"].Offset);
+        Assert.Equal(arch.Is64Bit ? 32 : 20, thread.Fields["Frame"].Offset);
+        Assert.Equal(arch.Is64Bit ? 40 : 24, thread.Fields["CachedStackBase"].Offset);
+        Assert.Equal(arch.Is64Bit ? 48 : 28, thread.Fields["CachedStackLimit"].Offset);
+        Assert.Equal(arch.Is64Bit ? 56 : 32, thread.Fields["TEB"].Offset);
+        Assert.Equal(arch.Is64Bit ? 64 : 36, thread.Fields["LastThrownObject"].Offset);
+        Assert.Equal(arch.Is64Bit ? 72 : 40, thread.Fields["LinkNext"].Offset);
+        Assert.Equal(arch.Is64Bit ? 80 : 44, thread.Fields["ExceptionTracker"].Offset);
+        Assert.Equal(arch.Is64Bit ? 88 : 48, thread.Fields["ThreadLocalDataPtr"].Offset);
+        Assert.Equal(arch.Is64Bit ? 96 : 52, thread.Fields["UEWatsonBucketTrackerBuckets"].Offset);
+
+        Assert.Equal(0, threadStore.Fields["ThreadCount"].Offset);
+        Assert.Equal(arch.Is64Bit ? 8 : 4, threadStore.Fields["FirstThreadLink"].Offset);
+        Assert.Equal(arch.Is64Bit ? 16 : 8, threadStore.Fields["UnstartedCount"].Offset);
+        Assert.Equal(arch.Is64Bit ? 20 : 12, threadStore.Fields["BackgroundCount"].Offset);
+        Assert.Equal(arch.Is64Bit ? 24 : 16, threadStore.Fields["PendingCount"].Offset);
+        Assert.Equal(arch.Is64Bit ? 28 : 20, threadStore.Fields["DeadCount"].Offset);
+    }
+
 }

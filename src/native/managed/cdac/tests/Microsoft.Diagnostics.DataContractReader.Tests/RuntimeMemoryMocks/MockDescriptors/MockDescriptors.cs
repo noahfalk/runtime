@@ -178,53 +178,6 @@ public static partial class MockDescriptors
         ]
     };
 
-    private static readonly TypeFields ExceptionInfoFields = new TypeFields()
-    {
-        DataType = DataType.ExceptionInfo,
-        Fields =
-        [
-            new(nameof(Data.ExceptionInfo.PreviousNestedInfo), DataType.pointer),
-            new(nameof(Data.ExceptionInfo.ThrownObjectHandle), DataType.pointer),
-            new(nameof(Data.ExceptionInfo.ExceptionWatsonBucketTrackerBuckets), DataType.pointer),
-        ]
-    };
-
-    private static readonly TypeFields ThreadFields = new TypeFields()
-    {
-        DataType = DataType.Thread,
-        Fields =
-        [
-            new(nameof(Data.Thread.Id), DataType.uint32),
-            new(nameof(Data.Thread.OSId), DataType.nuint),
-            new(nameof(Data.Thread.State), DataType.uint32),
-            new(nameof(Data.Thread.PreemptiveGCDisabled), DataType.uint32),
-            new(nameof(Data.Thread.RuntimeThreadLocals), DataType.pointer),
-            new(nameof(Data.Thread.Frame), DataType.pointer),
-            new(nameof(Data.Thread.CachedStackBase), DataType.pointer),
-            new(nameof(Data.Thread.CachedStackLimit), DataType.pointer),
-            new(nameof(Data.Thread.TEB), DataType.pointer),
-            new(nameof(Data.Thread.LastThrownObject), DataType.pointer),
-            new(nameof(Data.Thread.LinkNext), DataType.pointer),
-            new(nameof(Data.Thread.ExceptionTracker), DataType.pointer),
-            new(nameof(Data.Thread.ThreadLocalDataPtr), DataType.pointer),
-            new(nameof(Data.Thread.UEWatsonBucketTrackerBuckets), DataType.pointer),
-        ]
-    };
-
-    private static readonly TypeFields ThreadStoreFields = new TypeFields()
-    {
-        DataType = DataType.ThreadStore,
-        Fields =
-        [
-            new(nameof(Data.ThreadStore.ThreadCount), DataType.uint32),
-            new(nameof(Data.ThreadStore.FirstThreadLink), DataType.pointer),
-            new(nameof(Data.ThreadStore.UnstartedCount), DataType.uint32),
-            new(nameof(Data.ThreadStore.BackgroundCount), DataType.uint32),
-            new(nameof(Data.ThreadStore.PendingCount), DataType.uint32),
-            new(nameof(Data.ThreadStore.DeadCount), DataType.uint32),
-        ]
-    };
-
     private static readonly TypeFields GCCoverageInfoFields = new TypeFields()
     {
         DataType = DataType.GCCoverageInfo,
