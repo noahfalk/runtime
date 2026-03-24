@@ -185,6 +185,12 @@ public sealed class MockDataDescriptorBuilder
         return type;
     }
 
+    public MockDataDescriptorType AddType(Layout layout)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        return _types[layout.Name] = new MockDataDescriptorType(layout);
+    }
+
     public MockDataDescriptorType AddType(string name, Action<MockDataDescriptorTypeBuilder> configure)
     {
         MockDataDescriptorTypeBuilder typeBuilder = _types.TryGetValue(name, out MockDataDescriptorType? type)
@@ -194,6 +200,16 @@ public sealed class MockDataDescriptorBuilder
         configure(typeBuilder);
         MockDataDescriptorType updatedType = typeBuilder.Build();
         _types[name] = updatedType;
+        return updatedType;
+    }
+
+    public MockDataDescriptorType AddType(Layout layout, Action<MockDataDescriptorTypeBuilder> configure)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        MockDataDescriptorTypeBuilder typeBuilder = new(new MockDataDescriptorType(layout));
+        configure(typeBuilder);
+        MockDataDescriptorType updatedType = typeBuilder.Build();
+        _types[layout.Name] = updatedType;
         return updatedType;
     }
 
@@ -254,6 +270,26 @@ public sealed class MockDataDescriptorBuilder
 
 public sealed class MockDataDescriptorType
 {
+    public MockDataDescriptorType()
+    {
+    }
+
+    public MockDataDescriptorType(Layout layout)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+
+        Size = checked((uint)layout.Size);
+
+        MockDataDescriptorField[] fields = new MockDataDescriptorField[layout.Fields.Length];
+        for (int i = 0; i < layout.Fields.Length; i++)
+        {
+            LayoutField field = layout.Fields[i];
+            fields[i] = new MockDataDescriptorField(field.Name, field.Offset, field.Type?.Name);
+        }
+
+        Fields = fields;
+    }
+
     public uint? Size { get; init; }
     public IReadOnlyList<MockDataDescriptorField> Fields { get; init; } = [];
 

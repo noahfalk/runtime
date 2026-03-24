@@ -6,10 +6,322 @@ using System.Buffers.Binary;
 
 namespace Microsoft.Diagnostics.Internal.RuntimeMemoryMocks;
 
+public sealed class MockComMethodTable : TypedView
+{
+    private const string FlagsFieldName = "Flags";
+    private const string MethodTableFieldName = "MethodTable";
+
+    public static Layout<MockComMethodTable> CreateLayout(MockTarget.Architecture architecture)
+    {
+        LayoutBuilder builder = new("ComMethodTable", architecture)
+        {
+            Size = checked(2 * architecture.PointerSize),
+        };
+
+        builder.AddField("Flags", 0, architecture.PointerSize);
+        builder.AddField("MethodTable", architecture.PointerSize, architecture.PointerSize);
+        return builder.Build<MockComMethodTable>();
+    }
+
+    public ulong Flags
+    {
+        get => ReadPointerField(FlagsFieldName);
+        set => WritePointerField(FlagsFieldName, value);
+    }
+
+    public ulong MethodTable
+    {
+        get => ReadPointerField(MethodTableFieldName);
+        set => WritePointerField(MethodTableFieldName, value);
+    }
+
+    public ulong VTable
+        => Address + (ulong)Layout.Size;
+
+    public ulong GetVTableSlot(int index)
+        => ReadPointer(GetVTableSlotSpan(index));
+
+    public void SetVTableSlot(int index, ulong value)
+        => WritePointer(GetVTableSlotSpan(index), value);
+
+    private Span<byte> GetVTableSlotSpan(int index)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+
+        int trailingOffset = Layout.Size + (index * Architecture.PointerSize);
+        int trailingSize = Memory.Length - Layout.Size;
+        int slotCount = trailingSize / Architecture.PointerSize;
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, slotCount);
+
+        return Memory.Span.Slice(trailingOffset, Architecture.PointerSize);
+    }
+}
+
+internal sealed class MockInterfaceEntry : TypedView
+{
+    public static Layout<MockInterfaceEntry> CreateLayout(MockTarget.Architecture architecture)
+        => new SequentialLayoutBuilder("InterfaceEntry", architecture)
+            .AddPointerField("MethodTable")
+            .AddPointerField("Unknown")
+            .Build<MockInterfaceEntry>();
+
+    public ulong MethodTable
+    {
+        get => ReadPointerField("MethodTable");
+        set => WritePointerField("MethodTable", value);
+    }
+
+    public ulong Unknown
+    {
+        get => ReadPointerField("Unknown");
+        set => WritePointerField("Unknown", value);
+    }
+}
+
+internal sealed class MockCtxEntry : TypedView
+{
+    public static Layout<MockCtxEntry> CreateLayout(MockTarget.Architecture architecture)
+        => new SequentialLayoutBuilder("CtxEntry", architecture)
+            .AddPointerField("STAThread")
+            .AddPointerField("CtxCookie")
+            .Build<MockCtxEntry>();
+
+    public ulong STAThread
+    {
+        get => ReadPointerField("STAThread");
+        set => WritePointerField("STAThread", value);
+    }
+
+    public ulong CtxCookie
+    {
+        get => ReadPointerField("CtxCookie");
+        set => WritePointerField("CtxCookie", value);
+    }
+}
+
+internal sealed class MockRCW : TypedView
+{
+    public static Layout<MockRCW> CreateLayout(MockTarget.Architecture architecture)
+        => new SequentialLayoutBuilder("RCW", architecture)
+            .AddPointerField("NextCleanupBucket")
+            .AddPointerField("NextRCW")
+            .AddUInt32Field("Flags")
+            .AddPointerField("CtxCookie")
+            .AddPointerField("CtxEntry")
+            .AddPointerField("InterfaceEntries")
+            .AddPointerField("IdentityPointer")
+            .AddUInt32Field("SyncBlockIndex")
+            .AddPointerField("VTablePtr")
+            .AddPointerField("CreatorThread")
+            .AddUInt32Field("RefCount")
+            .AddPointerField("UnknownPointer")
+            .Build<MockRCW>();
+
+    public ulong IdentityPointer
+    {
+        get => ReadPointerField("IdentityPointer");
+        set => WritePointerField("IdentityPointer", value);
+    }
+
+    public ulong UnknownPointer
+    {
+        get => ReadPointerField("UnknownPointer");
+        set => WritePointerField("UnknownPointer", value);
+    }
+
+    public ulong VTablePtr
+    {
+        get => ReadPointerField("VTablePtr");
+        set => WritePointerField("VTablePtr", value);
+    }
+
+    public ulong CreatorThread
+    {
+        get => ReadPointerField("CreatorThread");
+        set => WritePointerField("CreatorThread", value);
+    }
+
+    public ulong CtxCookie
+    {
+        get => ReadPointerField("CtxCookie");
+        set => WritePointerField("CtxCookie", value);
+    }
+
+    public ulong CtxEntry
+    {
+        get => ReadPointerField("CtxEntry");
+        set => WritePointerField("CtxEntry", value);
+    }
+
+    public uint SyncBlockIndex
+    {
+        get => ReadUInt32Field("SyncBlockIndex");
+        set => WriteUInt32Field("SyncBlockIndex", value);
+    }
+
+    public uint RefCount
+    {
+        get => ReadUInt32Field("RefCount");
+        set => WriteUInt32Field("RefCount", value);
+    }
+
+    public uint Flags
+    {
+        get => ReadUInt32Field("Flags");
+        set => WriteUInt32Field("Flags", value);
+    }
+}
+
+public sealed class MockSimpleComCallWrapper : TypedView
+{
+    private const int RefCountFieldSize = sizeof(ulong);
+
+    public MockSimpleComCallWrapper()
+    {
+        VTablePointers = new VTablePointerCollection(this);
+    }
+
+    public static Layout<MockSimpleComCallWrapper> CreateLayout(MockTarget.Architecture architecture)
+    {
+        LayoutBuilder builder = new("SimpleComCallWrapper", architecture)
+        {
+            Size = checked(12 + (3 * architecture.PointerSize)),
+        };
+
+        builder.AddField("RefCount", 0, RefCountFieldSize);
+        builder.AddField("Flags", 8, sizeof(uint));
+        builder.AddField("MainWrapper", 12, architecture.PointerSize);
+        builder.AddField("VTablePtr", 12 + architecture.PointerSize, architecture.PointerSize);
+        builder.AddField("OuterIUnknown", 12 + (2 * architecture.PointerSize), architecture.PointerSize);
+        return builder.Build<MockSimpleComCallWrapper>();
+    }
+
+    public ulong VTablePointerAddress => GetFieldAddress("VTablePtr");
+
+    public VTablePointerCollection VTablePointers { get; }
+
+    public ulong RefCount
+    {
+        get => ReadUInt64Field("RefCount");
+        set => WriteUInt64Field("RefCount", value);
+    }
+
+    public uint Flags
+    {
+        get => ReadUInt32Field("Flags");
+        set => WriteUInt32Field("Flags", value);
+    }
+
+    public ulong MainWrapper
+    {
+        get => ReadPointerField("MainWrapper");
+        set => WritePointerField("MainWrapper", value);
+    }
+
+    public ulong VTablePtr
+    {
+        get => ReadPointerField("VTablePtr");
+        set => WritePointerField("VTablePtr", value);
+    }
+
+    public ulong OuterIUnknown
+    {
+        get => ReadPointerField("OuterIUnknown");
+        set => WritePointerField("OuterIUnknown", value);
+    }
+
+    public sealed class VTablePointerCollection
+    {
+        private readonly MockSimpleComCallWrapper _wrapper;
+
+        internal VTablePointerCollection(MockSimpleComCallWrapper wrapper)
+        {
+            _wrapper = wrapper;
+        }
+
+        public ulong this[int index]
+        {
+            get => _wrapper.ReadPointer(_wrapper.GetVTablePointerSpan(index));
+            set => _wrapper.WritePointer(_wrapper.GetVTablePointerSpan(index), value);
+        }
+    }
+
+    private Span<byte> GetVTablePointerSpan(int index)
+        => Memory.Span.Slice(Layout.GetField("MainWrapper").Offset + ((index + 1) * Architecture.PointerSize), Architecture.PointerSize);
+}
+
+public sealed class MockComCallWrapper : TypedView
+{
+    internal static ulong GetRequiredAlignment(MockTarget.Architecture architecture)
+        => architecture.Is64Bit ? 64UL : 32UL;
+
+    public MockComCallWrapper()
+    {
+        InterfacePointers = new InterfacePointerCollection(this);
+    }
+
+    public static Layout<MockComCallWrapper> CreateLayout(MockTarget.Architecture architecture)
+    {
+        LayoutBuilder builder = new("ComCallWrapper", architecture)
+        {
+            Size = checked(8 * architecture.PointerSize),
+        };
+
+        builder.SetAlignment(GetRequiredAlignment(architecture));
+        builder.AddField("SimpleWrapper", 0, architecture.PointerSize);
+        builder.AddField("IPtr", architecture.PointerSize, architecture.PointerSize);
+        builder.AddField("Next", 6 * architecture.PointerSize, architecture.PointerSize);
+        builder.AddField("Handle", 7 * architecture.PointerSize, architecture.PointerSize);
+        return builder.Build<MockComCallWrapper>();
+    }
+
+    public ulong InterfacePointerAddress => GetFieldAddress("IPtr");
+
+    public InterfacePointerCollection InterfacePointers { get; }
+
+    public ulong SimpleWrapper
+    {
+        get => ReadPointerField("SimpleWrapper");
+        set => WritePointerField("SimpleWrapper", value);
+    }
+
+    public ulong Next
+    {
+        get => ReadPointerField("Next");
+        set => WritePointerField("Next", value);
+    }
+
+    public ulong Handle
+    {
+        get => ReadPointerField("Handle");
+        set => WritePointerField("Handle", value);
+    }
+
+    public sealed class InterfacePointerCollection
+    {
+        private readonly MockComCallWrapper _wrapper;
+
+        internal InterfacePointerCollection(MockComCallWrapper wrapper)
+        {
+            _wrapper = wrapper;
+        }
+
+        public ulong this[int index]
+        {
+            get => _wrapper.ReadPointer(_wrapper.GetInterfacePointerSpan(index));
+            set => _wrapper.WritePointer(_wrapper.GetInterfacePointerSpan(index), value);
+        }
+    }
+
+    private Span<byte> GetInterfacePointerSpan(int index)
+        => Memory.Span.Slice(Layout.GetField("IPtr").Offset + (index * Architecture.PointerSize), Architecture.PointerSize);
+}
+
 public sealed class MockBuiltInComBuilder
 {
     private readonly MockMemorySpace.BumpAllocator _allocator;
-    private readonly MockMemoryHelpers _memoryHelpers;
+    private readonly MockTarget.Architecture _architecture;
+    private readonly Layout _codePointerLayout;
 
     public const uint DefaultNumVtablePtrs = 5;
     public const uint DefaultRCWInterfaceCacheSize = 8;
@@ -26,7 +338,20 @@ public sealed class MockBuiltInComBuilder
     internal MockBuiltInComBuilder(MockMemorySpace.BumpAllocator allocator, MockTarget.Architecture architecture)
     {
         _allocator = allocator;
-        _memoryHelpers = new(architecture);
+        _architecture = architecture;
+
+        LayoutBuilder codePointerLayoutBuilder = new("CodePointer", architecture)
+        {
+            Size = architecture.PointerSize,
+        };
+        _codePointerLayout = codePointerLayoutBuilder.Build();
+
+        ComCallWrapperLayout = MockComCallWrapper.CreateLayout(architecture);
+        SimpleComCallWrapperLayout = MockSimpleComCallWrapper.CreateLayout(architecture);
+        ComMethodTableLayout = MockComMethodTable.CreateLayout(architecture);
+        InterfaceEntryLayout = MockInterfaceEntry.CreateLayout(architecture);
+        CtxEntryLayout = MockCtxEntry.CreateLayout(architecture);
+        RCWLayout = MockRCW.CreateLayout(architecture);
 
         TearOffAddRefAddress = AllocateCodeAddress(allocator, "TearOffAddRefCode");
         TearOffAddRefSimpleAddress = AllocateCodeAddress(allocator, "TearOffAddRefSimpleCode");
@@ -37,43 +362,51 @@ public sealed class MockBuiltInComBuilder
         TearOffAddRefSimpleInnerSlot = allocator.AllocatePointer(TearOffAddRefSimpleInnerAddress, "TearOffAddRefSimpleInnerSlot");
     }
 
-    public MockSimpleComCallWrapper AddSimpleComCallWrapper()
-    {
-        MockMemorySpace.HeapFragment fragment = _allocator.AllocateFragment(
-            checked((ulong)(12 + (3 * _memoryHelpers.PointerSize))),
-            "SimpleComCallWrapper");
-        return new MockSimpleComCallWrapper(_memoryHelpers, fragment);
-    }
+    internal Layout CodePointerLayout => _codePointerLayout;
 
-    public MockComCallWrapper AddComCallWrapper(ulong? alignment = null)
+    internal Layout<MockComCallWrapper> ComCallWrapperLayout { get; }
+
+    internal Layout<MockSimpleComCallWrapper> SimpleComCallWrapperLayout { get; }
+
+    internal Layout<MockComMethodTable> ComMethodTableLayout { get; }
+
+    internal Layout<MockInterfaceEntry> InterfaceEntryLayout { get; }
+
+    internal Layout<MockCtxEntry> CtxEntryLayout { get; }
+
+    internal Layout<MockRCW> RCWLayout { get; }
+
+    public MockSimpleComCallWrapper AddSimpleComCallWrapper()
+        => SimpleComCallWrapperLayout.Allocate(_allocator, "SimpleComCallWrapper");
+
+    public MockComCallWrapper AddComCallWrapper()
+        => ComCallWrapperLayout.Allocate(_allocator, "ComCallWrapper");
+
+    public MockComMethodTable AddComMethodTable(int vtableSlots = 0)
     {
-        MockMemorySpace.HeapFragment fragment = _allocator.AllocateFragment(
-            checked((ulong)(8 * _memoryHelpers.PointerSize)),
-            "ComCallWrapper",
-            alignment);
-        return new MockComCallWrapper(_memoryHelpers, fragment);
+        ArgumentOutOfRangeException.ThrowIfNegative(vtableSlots);
+
+        int totalSize = checked(ComMethodTableLayout.Size + (vtableSlots * _architecture.PointerSize));
+        MockMemorySpace.HeapFragment fragment = _allocator.AllocateFragment((ulong)totalSize, "ComMethodTable");
+        return ComMethodTableLayout.Create(fragment.Data.AsMemory(0, totalSize), fragment.Address);
     }
 
     public ulong AddRCWWithInlineEntries((ulong MethodTable, ulong Unknown)[] entries, ulong ctxCookie = 0)
     {
-        int entrySize = GetInterfaceEntrySize();
-        int entriesOffset = GetRcwInterfaceEntriesOffset();
+        MockMemorySpace.HeapFragment fragment = _allocator.AllocateFragment((ulong)GetFullRcwSize(), "RCW with inline entries");
+        MockRCW rcw = RCWLayout.Create(fragment);
+        rcw.CtxCookie = ctxCookie;
+
         int interfaceCacheSize = checked((int)RCWInterfaceCacheSize);
-        int totalSize = checked(entriesOffset + (entrySize * interfaceCacheSize));
-
-        MockMemorySpace.HeapFragment fragment = _allocator.AllocateFragment((ulong)totalSize, "RCW with inline entries");
-        Span<byte> data = fragment.Data;
-
-        WritePointer(data.Slice(GetRcwCtxCookieOffset(), _memoryHelpers.PointerSize), ctxCookie);
-
-        for (int i = 0; i < entries.Length && i < interfaceCacheSize; i++)
+        int entryCount = Math.Min(entries.Length, interfaceCacheSize);
+        for (int i = 0; i < entryCount; i++)
         {
-            Span<byte> entryData = data.Slice(entriesOffset + (i * entrySize), entrySize);
-            WritePointer(entryData.Slice(0, _memoryHelpers.PointerSize), entries[i].MethodTable);
-            WritePointer(entryData.Slice(_memoryHelpers.PointerSize, _memoryHelpers.PointerSize), entries[i].Unknown);
+            MockInterfaceEntry entry = CreateRcwInterfaceEntry(rcw, i);
+            entry.MethodTable = entries[i].MethodTable;
+            entry.Unknown = entries[i].Unknown;
         }
 
-        return fragment.Address;
+        return rcw.Address;
     }
 
     public ulong AddFullRCW(
@@ -87,32 +420,26 @@ public sealed class MockBuiltInComBuilder
         uint refCount = 0,
         uint flags = 0)
     {
-        int totalSize = checked(GetRcwInterfaceEntriesOffset() + (GetInterfaceEntrySize() * checked((int)RCWInterfaceCacheSize)));
-        MockMemorySpace.HeapFragment fragment = _allocator.AllocateFragment((ulong)totalSize, "Full RCW");
-        Span<byte> data = fragment.Data;
-
-        WritePointer(data.Slice(GetRcwIdentityPointerOffset(), _memoryHelpers.PointerSize), identityPointer);
-        WritePointer(data.Slice(GetRcwUnknownPointerOffset(), _memoryHelpers.PointerSize), unknownPointer);
-        WritePointer(data.Slice(GetRcwVTablePtrOffset(), _memoryHelpers.PointerSize), vtablePtr);
-        WritePointer(data.Slice(GetRcwCreatorThreadOffset(), _memoryHelpers.PointerSize), creatorThread);
-        WritePointer(data.Slice(GetRcwCtxCookieOffset(), _memoryHelpers.PointerSize), ctxCookie);
-        WritePointer(data.Slice(GetRcwCtxEntryOffset(), _memoryHelpers.PointerSize), ctxEntry);
-        _memoryHelpers.Write(data.Slice(GetRcwSyncBlockIndexOffset(), sizeof(uint)), syncBlockIndex);
-        _memoryHelpers.Write(data.Slice(GetRcwRefCountOffset(), sizeof(uint)), refCount);
-        _memoryHelpers.Write(data.Slice(GetRcwFlagsOffset(), sizeof(uint)), flags);
-
-        return fragment.Address;
+        MockMemorySpace.HeapFragment fragment = _allocator.AllocateFragment((ulong)GetFullRcwSize(), "Full RCW");
+        MockRCW rcw = RCWLayout.Create(fragment);
+        rcw.IdentityPointer = identityPointer;
+        rcw.UnknownPointer = unknownPointer;
+        rcw.VTablePtr = vtablePtr;
+        rcw.CreatorThread = creatorThread;
+        rcw.CtxCookie = ctxCookie;
+        rcw.CtxEntry = ctxEntry;
+        rcw.SyncBlockIndex = syncBlockIndex;
+        rcw.RefCount = refCount;
+        rcw.Flags = flags;
+        return rcw.Address;
     }
 
     public ulong AddCtxEntry(ulong staThread = 0, ulong ctxCookie = 0)
     {
-        MockMemorySpace.HeapFragment fragment = _allocator.AllocateFragment((ulong)GetCtxEntrySize(), "CtxEntry");
-        Span<byte> data = fragment.Data;
-
-        WritePointer(data.Slice(0, _memoryHelpers.PointerSize), staThread);
-        WritePointer(data.Slice(_memoryHelpers.PointerSize, _memoryHelpers.PointerSize), ctxCookie);
-
-        return fragment.Address;
+        MockCtxEntry entry = CtxEntryLayout.Allocate(_allocator, "CtxEntry");
+        entry.STAThread = staThread;
+        entry.CtxCookie = ctxCookie;
+        return entry.Address;
     }
 
     public MockMemorySpace.HeapFragment AllocateFragment(ulong size, string? name = null, ulong? alignment = null)
@@ -124,203 +451,27 @@ public sealed class MockBuiltInComBuilder
     internal static ulong GetCCWThisMask(MockTarget.Architecture architecture)
         => architecture.Is64Bit ? ~0x3FUL : ~0x1FUL;
 
-    private void WritePointer(Span<byte> destination, ulong value)
-        => _memoryHelpers.WritePointer(destination, value);
+    private MockInterfaceEntry CreateRcwInterfaceEntry(MockRCW rcw, int index)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, checked((int)RCWInterfaceCacheSize));
 
-    private int GetInterfaceEntrySize() => 2 * _memoryHelpers.PointerSize;
+        int offset = RCWLayout.GetField("InterfaceEntries").Offset + (index * InterfaceEntryLayout.Size);
+        return InterfaceEntryLayout.Create(
+            rcw.Memory.Slice(offset, InterfaceEntryLayout.Size),
+            rcw.Address + (ulong)offset);
+    }
 
-    private int GetCtxEntrySize() => 2 * _memoryHelpers.PointerSize;
-
-    private int GetRcwFlagsOffset() => 2 * _memoryHelpers.PointerSize;
-
-    private int GetRcwCtxCookieOffset() => Align(GetRcwFlagsOffset() + sizeof(uint), _memoryHelpers.PointerSize);
-
-    private int GetRcwCtxEntryOffset() => GetRcwCtxCookieOffset() + _memoryHelpers.PointerSize;
-
-    private int GetRcwInterfaceEntriesOffset() => GetRcwCtxEntryOffset() + _memoryHelpers.PointerSize;
-
-    private int GetRcwIdentityPointerOffset() => GetRcwInterfaceEntriesOffset() + _memoryHelpers.PointerSize * 1;
-
-    private int GetRcwSyncBlockIndexOffset() => GetRcwIdentityPointerOffset() + _memoryHelpers.PointerSize;
-
-    private int GetRcwVTablePtrOffset() => Align(GetRcwSyncBlockIndexOffset() + sizeof(uint), _memoryHelpers.PointerSize);
-
-    private int GetRcwCreatorThreadOffset() => GetRcwVTablePtrOffset() + _memoryHelpers.PointerSize;
-
-    private int GetRcwRefCountOffset() => GetRcwCreatorThreadOffset() + _memoryHelpers.PointerSize;
-
-    private int GetRcwUnknownPointerOffset() => Align(GetRcwRefCountOffset() + sizeof(uint), _memoryHelpers.PointerSize);
-
-    private static int Align(int offset, int alignment)
-        => ((offset + alignment) - 1) & ~(alignment - 1);
+    private int GetFullRcwSize()
+        => checked(RCWLayout.GetField("InterfaceEntries").Offset + (InterfaceEntryLayout.Size * (int)RCWInterfaceCacheSize));
 
     private static ulong AllocateCodeAddress(MockMemorySpace.BumpAllocator allocator, string name)
         => allocator.AllocateFragment(1, name).Address;
 }
 
-public sealed class MockSimpleComCallWrapper
-{
-    private const int RefCountOffset = 0;
-    private const int FlagsOffset = 8;
-    private const int MainWrapperOffset = 12;
-
-    private readonly MockMemoryHelpers _memoryHelpers;
-    private readonly MockMemorySpace.HeapFragment _fragment;
-
-    internal MockSimpleComCallWrapper(MockMemoryHelpers memoryHelpers, MockMemorySpace.HeapFragment fragment)
-    {
-        _memoryHelpers = memoryHelpers;
-        _fragment = fragment;
-        VTablePointers = new VTablePointerCollection(this);
-    }
-
-    public ulong Address => _fragment.Address;
-    public ulong VTablePointerAddress => _fragment.Address + (ulong)(MainWrapperOffset + _memoryHelpers.PointerSize);
-    public VTablePointerCollection VTablePointers { get; }
-
-    public ulong RefCount
-    {
-        get => ReadUInt64(_fragment.Data.AsSpan(RefCountOffset, sizeof(ulong)));
-        set => _memoryHelpers.Write(_fragment.Data.AsSpan(RefCountOffset, sizeof(ulong)), value);
-    }
-
-    public uint Flags
-    {
-        get => ReadUInt32(_fragment.Data.AsSpan(FlagsOffset, sizeof(uint)));
-        set => _memoryHelpers.Write(_fragment.Data.AsSpan(FlagsOffset, sizeof(uint)), value);
-    }
-
-    public ulong MainWrapper
-    {
-        get => ReadPointer(_fragment.Data.AsSpan(MainWrapperOffset, _memoryHelpers.PointerSize));
-        set => _memoryHelpers.WritePointer(_fragment.Data.AsSpan(MainWrapperOffset, _memoryHelpers.PointerSize), value);
-    }
-
-    public ulong VTablePtr
-    {
-        get => ReadPointer(_fragment.Data.AsSpan(MainWrapperOffset + _memoryHelpers.PointerSize, _memoryHelpers.PointerSize));
-        set => _memoryHelpers.WritePointer(_fragment.Data.AsSpan(MainWrapperOffset + _memoryHelpers.PointerSize, _memoryHelpers.PointerSize), value);
-    }
-
-    public ulong OuterIUnknown
-    {
-        get => ReadPointer(_fragment.Data.AsSpan(MainWrapperOffset + (2 * _memoryHelpers.PointerSize), _memoryHelpers.PointerSize));
-        set => _memoryHelpers.WritePointer(_fragment.Data.AsSpan(MainWrapperOffset + (2 * _memoryHelpers.PointerSize), _memoryHelpers.PointerSize), value);
-    }
-
-    public sealed class VTablePointerCollection
-    {
-        private readonly MockSimpleComCallWrapper _wrapper;
-
-        internal VTablePointerCollection(MockSimpleComCallWrapper wrapper)
-        {
-            _wrapper = wrapper;
-        }
-
-        public ulong this[int index]
-        {
-            get => _wrapper.ReadPointer(_wrapper.GetVTablePointerSpan(index));
-            set => _wrapper._memoryHelpers.WritePointer(_wrapper.GetVTablePointerSpan(index), value);
-        }
-    }
-
-    private uint ReadUInt32(ReadOnlySpan<byte> source)
-        => _memoryHelpers.Arch.IsLittleEndian
-            ? BinaryPrimitives.ReadUInt32LittleEndian(source)
-            : BinaryPrimitives.ReadUInt32BigEndian(source);
-
-    private ulong ReadUInt64(ReadOnlySpan<byte> source)
-        => _memoryHelpers.Arch.IsLittleEndian
-            ? BinaryPrimitives.ReadUInt64LittleEndian(source)
-            : BinaryPrimitives.ReadUInt64BigEndian(source);
-
-    private ulong ReadPointer(ReadOnlySpan<byte> source)
-        => _memoryHelpers.Arch.Is64Bit ? ReadUInt64(source) : ReadUInt32(source);
-
-    private Span<byte> GetVTablePointerSpan(int index)
-        => _fragment.Data.AsSpan(MainWrapperOffset + ((index + 1) * _memoryHelpers.PointerSize), _memoryHelpers.PointerSize);
-}
-
-public sealed class MockComCallWrapper
-{
-    private const int SimpleWrapperOffset = 0;
-    private const int InterfacePointerOffset = 1;
-
-    private readonly MockMemoryHelpers _memoryHelpers;
-    private readonly MockMemorySpace.HeapFragment _fragment;
-
-    internal MockComCallWrapper(MockMemoryHelpers memoryHelpers, MockMemorySpace.HeapFragment fragment)
-    {
-        _memoryHelpers = memoryHelpers;
-        _fragment = fragment;
-        InterfacePointers = new InterfacePointerCollection(this);
-    }
-
-    public ulong Address => _fragment.Address;
-    public ulong InterfacePointerAddress => _fragment.Address + (ulong)(InterfacePointerOffset * _memoryHelpers.PointerSize);
-    public InterfacePointerCollection InterfacePointers { get; }
-
-    public ulong SimpleWrapper
-    {
-        get => ReadPointer(_fragment.Data.AsSpan(SimpleWrapperOffset, _memoryHelpers.PointerSize));
-        set => _memoryHelpers.WritePointer(_fragment.Data.AsSpan(SimpleWrapperOffset, _memoryHelpers.PointerSize), value);
-    }
-
-    public ulong Next
-    {
-        get => ReadPointer(_fragment.Data.AsSpan(6 * _memoryHelpers.PointerSize, _memoryHelpers.PointerSize));
-        set => _memoryHelpers.WritePointer(_fragment.Data.AsSpan(6 * _memoryHelpers.PointerSize, _memoryHelpers.PointerSize), value);
-    }
-
-    public ulong Handle
-    {
-        get => ReadPointer(_fragment.Data.AsSpan(7 * _memoryHelpers.PointerSize, _memoryHelpers.PointerSize));
-        set => _memoryHelpers.WritePointer(_fragment.Data.AsSpan(7 * _memoryHelpers.PointerSize, _memoryHelpers.PointerSize), value);
-    }
-
-    public sealed class InterfacePointerCollection
-    {
-        private readonly MockComCallWrapper _wrapper;
-
-        internal InterfacePointerCollection(MockComCallWrapper wrapper)
-        {
-            _wrapper = wrapper;
-        }
-
-        public ulong this[int index]
-        {
-            get => _wrapper.ReadPointer(_wrapper.GetInterfacePointerSpan(index));
-            set => _wrapper._memoryHelpers.WritePointer(_wrapper.GetInterfacePointerSpan(index), value);
-        }
-    }
-
-    private uint ReadUInt32(ReadOnlySpan<byte> source)
-        => _memoryHelpers.Arch.IsLittleEndian
-            ? BinaryPrimitives.ReadUInt32LittleEndian(source)
-            : BinaryPrimitives.ReadUInt32BigEndian(source);
-
-    private ulong ReadUInt64(ReadOnlySpan<byte> source)
-        => _memoryHelpers.Arch.IsLittleEndian
-            ? BinaryPrimitives.ReadUInt64LittleEndian(source)
-            : BinaryPrimitives.ReadUInt64BigEndian(source);
-
-    private ulong ReadPointer(ReadOnlySpan<byte> source)
-        => _memoryHelpers.Arch.Is64Bit ? ReadUInt64(source) : ReadUInt32(source);
-
-    private Span<byte> GetInterfacePointerSpan(int index)
-        => _fragment.Data.AsSpan((InterfacePointerOffset + index) * _memoryHelpers.PointerSize, _memoryHelpers.PointerSize);
-}
-
 public static class MockBuiltInComBuilderExtensions
 {
     private const string BuiltInCOMContractName = "BuiltInCOM";
-    private const string CodePointerTypeName = "CodePointer";
-    private const string ComCallWrapperTypeName = "ComCallWrapper";
-    private const string SimpleComCallWrapperTypeName = "SimpleComCallWrapper";
-    private const string ComMethodTableTypeName = "ComMethodTable";
-    private const string RCWTypeName = "RCW";
-    private const string InterfaceEntryTypeName = "InterfaceEntry";
-    private const string CtxEntryTypeName = "CtxEntry";
 
     public static MockProcessBuilder AddBuiltInCom(
         this MockProcessBuilder processBuilder,
@@ -334,7 +485,13 @@ public static class MockBuiltInComBuilderExtensions
         {
             module.AddDataDescriptor(descriptor =>
             {
-                AddTypes(descriptor, processBuilder.Architecture.PointerSize);
+                descriptor.AddType(config.CodePointerLayout);
+                descriptor.AddType(config.ComCallWrapperLayout);
+                descriptor.AddType(config.SimpleComCallWrapperLayout);
+                descriptor.AddType(config.ComMethodTableLayout);
+                descriptor.AddType(config.InterfaceEntryLayout);
+                descriptor.AddType(config.CtxEntryLayout);
+                descriptor.AddType(config.RCWLayout);
                 descriptor
                     .AddContract(BuiltInCOMContractName, 1)
                     .AddGlobalValue("CCWNumInterfaces", config.CCWNumInterfaces)
@@ -347,65 +504,5 @@ public static class MockBuiltInComBuilderExtensions
         });
 
         return processBuilder;
-    }
-
-    private static void AddTypes(MockDataDescriptorBuilder descriptor, int pointerSize)
-    {
-        descriptor.AddType(CodePointerTypeName, type =>
-        {
-            type.Size = (uint)pointerSize;
-        });
-
-        descriptor.AddType(ComCallWrapperTypeName, type =>
-        {
-            type.AddField("SimpleWrapper", 0);
-            type.AddField("IPtr", pointerSize);
-            type.AddField("Next", 6 * pointerSize);
-            type.AddField("Handle", 7 * pointerSize);
-        });
-
-        descriptor.AddType(SimpleComCallWrapperTypeName, type =>
-        {
-            type.AddField("RefCount", 0);
-            type.AddField("Flags", 8);
-            type.AddField("MainWrapper", 12);
-            type.AddField("VTablePtr", 12 + pointerSize);
-            type.AddField("OuterIUnknown", 12 + (2 * pointerSize));
-        });
-
-        descriptor.AddType(ComMethodTableTypeName, type =>
-        {
-            type.Size = (uint)(2 * pointerSize);
-            type.AddField("Flags", 0);
-            type.AddField("MethodTable", pointerSize);
-        });
-
-        descriptor.AddSequentialType(InterfaceEntryTypeName, type =>
-        {
-            type.AddPointerField("MethodTable");
-            type.AddPointerField("Unknown");
-        });
-
-        descriptor.AddSequentialType(CtxEntryTypeName, type =>
-        {
-            type.AddPointerField("STAThread");
-            type.AddPointerField("CtxCookie");
-        });
-
-        descriptor.AddSequentialType(RCWTypeName, type =>
-        {
-            type.AddPointerField("NextCleanupBucket");
-            type.AddPointerField("NextRCW");
-            type.AddUInt32Field("Flags");
-            type.AddPointerField("CtxCookie");
-            type.AddPointerField("CtxEntry");
-            type.AddPointerField("InterfaceEntries");
-            type.AddPointerField("IdentityPointer");
-            type.AddUInt32Field("SyncBlockIndex");
-            type.AddPointerField("VTablePtr");
-            type.AddPointerField("CreatorThread");
-            type.AddUInt32Field("RefCount");
-            type.AddPointerField("UnknownPointer");
-        });
     }
 }

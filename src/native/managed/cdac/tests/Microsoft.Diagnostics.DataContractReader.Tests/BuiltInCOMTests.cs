@@ -234,7 +234,6 @@ public class BuiltInCOMTests
     public void GetCCWInterfaces_SingleWrapper_SkipsNullAndIncompleteSlots(MockTarget.Architecture arch)
     {
         int P = arch.PointerSize;
-        uint cmtSize = (uint)(2 * P);
         const ulong ExpectedMethodTable2 = 0xdead_0002;
 
         MockComCallWrapper? wrapper = null;
@@ -247,34 +246,28 @@ public class BuiltInCOMTests
             wrapper.SimpleWrapper = simpleWrapper.Address;
             wrapper.Next = LinkedWrapperTerminator;
             // Slot 0: IUnknown (layout complete; MethodTable is Null per spec for first wrapper's slot 0)
-            MockMemorySpace.HeapFragment cmt0Frag = builtInCom.AllocateFragment(cmtSize, "ComMethodTable[0]");
-            ulong vtable0 = cmt0Frag.Address + cmtSize;
+            MockComMethodTable cmt0 = builtInCom.AddComMethodTable();
 
             // Slot 1: incomplete layout (should be skipped)
-            MockMemorySpace.HeapFragment cmt1Frag = builtInCom.AllocateFragment(cmtSize, "ComMethodTable[1]");
-            ulong vtable1 = cmt1Frag.Address + cmtSize;
+            MockComMethodTable cmt1 = builtInCom.AddComMethodTable();
 
             // Slot 2: layout complete with a MethodTable
-            MockMemorySpace.HeapFragment cmt2Frag = builtInCom.AllocateFragment(cmtSize, "ComMethodTable[2]");
-            ulong vtable2 = cmt2Frag.Address + cmtSize;
+            MockComMethodTable cmt2 = builtInCom.AddComMethodTable();
 
-            wrapper.InterfacePointers[0] = vtable0;
-            wrapper.InterfacePointers[1] = vtable1;
-            wrapper.InterfacePointers[2] = vtable2;
+            wrapper.InterfacePointers[0] = cmt0.VTable;
+            wrapper.InterfacePointers[1] = cmt1.VTable;
+            wrapper.InterfacePointers[2] = cmt2.VTable;
             wrapper.InterfacePointers[3] = 0;
             wrapper.InterfacePointers[4] = 0;
             wrapper.Next = LinkedWrapperTerminator;
 
-            SpanWriter writer = new(arch, cmt0Frag.Data);
-            writer.WritePointer(IsLayoutCompleteFlag);
-            writer.WritePointer(0);
+            cmt0.Flags = IsLayoutCompleteFlag;
+            cmt0.MethodTable = 0;
 
-            writer = new(arch, cmt1Frag.Data);
-            writer.WritePointer(0);
+            cmt1.Flags = 0;
 
-            writer = new(arch, cmt2Frag.Data);
-            writer.WritePointer(IsLayoutCompleteFlag);
-            writer.WritePointer(ExpectedMethodTable2);
+            cmt2.Flags = IsLayoutCompleteFlag;
+            cmt2.MethodTable = ExpectedMethodTable2;
         });
 
         List<COMInterfacePointerData> interfaces =
@@ -297,7 +290,6 @@ public class BuiltInCOMTests
     public void GetCCWInterfaces_MultipleWrappers_WalksChain(MockTarget.Architecture arch)
     {
         int P = arch.PointerSize;
-        uint cmtSize = (uint)(2 * P);
         const ulong ExpectedMethodTableSlot0 = 0xbbbb_0000;
         const ulong ExpectedMethodTableSlot2 = 0xcccc_0002;
 
@@ -314,38 +306,32 @@ public class BuiltInCOMTests
             wrapper1.Next = wrapper2.Address;
             wrapper2.SimpleWrapper = simpleWrapper.Address;
             wrapper2.Next = LinkedWrapperTerminator;
-            MockMemorySpace.HeapFragment cmt1_0Frag = builtInCom.AllocateFragment(cmtSize, "ComMethodTable ccw1[0]");
-            ulong vtable1_0 = cmt1_0Frag.Address + cmtSize;
+            MockComMethodTable cmt1_0 = builtInCom.AddComMethodTable();
 
-            MockMemorySpace.HeapFragment cmt2_0Frag = builtInCom.AllocateFragment(cmtSize, "ComMethodTable ccw2[0]");
-            ulong vtable2_0 = cmt2_0Frag.Address + cmtSize;
+            MockComMethodTable cmt2_0 = builtInCom.AddComMethodTable();
 
-            MockMemorySpace.HeapFragment cmt2_2Frag = builtInCom.AllocateFragment(cmtSize, "ComMethodTable ccw2[2]");
-            ulong vtable2_2 = cmt2_2Frag.Address + cmtSize;
+            MockComMethodTable cmt2_2 = builtInCom.AddComMethodTable();
 
-            wrapper1.InterfacePointers[0] = vtable1_0;
+            wrapper1.InterfacePointers[0] = cmt1_0.VTable;
             wrapper1.InterfacePointers[1] = 0;
             wrapper1.InterfacePointers[2] = 0;
             wrapper1.InterfacePointers[3] = 0;
             wrapper1.InterfacePointers[4] = 0;
 
-            wrapper2.InterfacePointers[0] = vtable2_0;
+            wrapper2.InterfacePointers[0] = cmt2_0.VTable;
             wrapper2.InterfacePointers[1] = 0;
-            wrapper2.InterfacePointers[2] = vtable2_2;
+            wrapper2.InterfacePointers[2] = cmt2_2.VTable;
             wrapper2.InterfacePointers[3] = 0;
             wrapper2.InterfacePointers[4] = 0;
 
-            SpanWriter writer = new(arch, cmt1_0Frag.Data);
-            writer.WritePointer(IsLayoutCompleteFlag);
-            writer.WritePointer(0);
+            cmt1_0.Flags = IsLayoutCompleteFlag;
+            cmt1_0.MethodTable = 0;
 
-            writer = new(arch, cmt2_0Frag.Data);
-            writer.WritePointer(IsLayoutCompleteFlag);
-            writer.WritePointer(ExpectedMethodTableSlot0);
+            cmt2_0.Flags = IsLayoutCompleteFlag;
+            cmt2_0.MethodTable = ExpectedMethodTableSlot0;
 
-            writer = new(arch, cmt2_2Frag.Data);
-            writer.WritePointer(IsLayoutCompleteFlag);
-            writer.WritePointer(ExpectedMethodTableSlot2);
+            cmt2_2.Flags = IsLayoutCompleteFlag;
+            cmt2_2.MethodTable = ExpectedMethodTableSlot2;
         });
 
         List<COMInterfacePointerData> interfaces =
@@ -372,7 +358,6 @@ public class BuiltInCOMTests
     public void GetCCWInterfaces_LinkedWrapper_WalksFullChainFromAnyWrapper(MockTarget.Architecture arch)
     {
         int P = arch.PointerSize;
-        uint cmtSize = (uint)(2 * P);
         const ulong ExpectedMethodTable = 0xaaaa_0001;
 
         MockComCallWrapper? wrapper1 = null;
@@ -388,31 +373,27 @@ public class BuiltInCOMTests
             wrapper1.Next = wrapper2.Address;
             wrapper2.SimpleWrapper = simpleWrapper.Address;
             wrapper2.Next = LinkedWrapperTerminator;
-            MockMemorySpace.HeapFragment cmt1Frag = builtInCom.AllocateFragment(cmtSize, "ComMethodTable[1]");
-            ulong vtable1 = cmt1Frag.Address + cmtSize;
+            MockComMethodTable cmt1 = builtInCom.AddComMethodTable();
 
-            MockMemorySpace.HeapFragment cmt2Frag = builtInCom.AllocateFragment(cmtSize, "ComMethodTable[2]");
-            ulong vtable2 = cmt2Frag.Address + cmtSize;
+            MockComMethodTable cmt2 = builtInCom.AddComMethodTable();
 
-            wrapper1.InterfacePointers[0] = vtable1;
+            wrapper1.InterfacePointers[0] = cmt1.VTable;
             wrapper1.InterfacePointers[1] = 0;
             wrapper1.InterfacePointers[2] = 0;
             wrapper1.InterfacePointers[3] = 0;
             wrapper1.InterfacePointers[4] = 0;
 
             wrapper2.InterfacePointers[0] = 0;
-            wrapper2.InterfacePointers[1] = vtable2;
+            wrapper2.InterfacePointers[1] = cmt2.VTable;
             wrapper2.InterfacePointers[2] = 0;
             wrapper2.InterfacePointers[3] = 0;
             wrapper2.InterfacePointers[4] = 0;
 
-            SpanWriter writer = new(arch, cmt1Frag.Data);
-            writer.WritePointer(IsLayoutCompleteFlag);
-            writer.WritePointer(0);
+            cmt1.Flags = IsLayoutCompleteFlag;
+            cmt1.MethodTable = 0;
 
-            writer = new(arch, cmt2Frag.Data);
-            writer.WritePointer(IsLayoutCompleteFlag);
-            writer.WritePointer(ExpectedMethodTable);
+            cmt2.Flags = IsLayoutCompleteFlag;
+            cmt2.MethodTable = ExpectedMethodTable;
         });
 
         // Passing the start CCW enumerates both wrappers' interfaces.
@@ -475,7 +456,6 @@ public class BuiltInCOMTests
     public void GetCCWInterfaces_ComIpAddress_ResolvesToCCW(MockTarget.Architecture arch)
     {
         int P = arch.PointerSize;
-        uint cmtSize = (uint)(2 * P);
 
         // Place the CCW at a CCWThisMask-aligned address so that (ccwAddr + P) & thisMask == ccwAddr.
         // On 64-bit: alignment = 64 bytes; on 32-bit: alignment = 32 bytes.
@@ -487,29 +467,25 @@ public class BuiltInCOMTests
         IBuiltInCOM contract = CreateBuiltInComTarget(arch, builtInCom =>
         {
             MockSimpleComCallWrapper simpleWrapper = builtInCom.AddSimpleComCallWrapper();
-            wrapper = builtInCom.AddComCallWrapper(alignment);
+            wrapper = builtInCom.AddComCallWrapper();
             tearOffAddRefAddress = builtInCom.TearOffAddRefAddress;
             simpleWrapper.MainWrapper = wrapper.Address;
             wrapper.SimpleWrapper = simpleWrapper.Address;
             wrapper.Next = LinkedWrapperTerminator;
-            MockMemorySpace.HeapFragment cmtFrag = builtInCom.AllocateFragment(cmtSize, "ComMethodTable");
-            ulong vtable = cmtFrag.Address + cmtSize;
-            builtInCom.AdvanceTo(vtable);
-            MockMemorySpace.HeapFragment vtableExtFrag = builtInCom.AllocateFragment((ulong)(2 * P), "VtableExt", 1);
-            SpanWriter writer = new(arch, vtableExtFrag.Data);
-            writer.WritePointer(0);
-            writer.WritePointer(tearOffAddRefAddress);
-
-            wrapper.InterfacePointers[0] = vtable;
+            MockComMethodTable cmt = builtInCom.AddComMethodTable(vtableSlots: 2);
+            wrapper.InterfacePointers[0] = cmt.VTable;
             wrapper.InterfacePointers[1] = 0;
             wrapper.InterfacePointers[2] = 0;
             wrapper.InterfacePointers[3] = 0;
             wrapper.InterfacePointers[4] = 0;
 
-            writer = new(arch, cmtFrag.Data);
-            writer.WritePointer(IsLayoutCompleteFlag);
-            writer.WritePointer(0);
+            cmt.Flags = IsLayoutCompleteFlag;
+            cmt.MethodTable = 0;
+            cmt.SetVTableSlot(0, 0);
+            cmt.SetVTableSlot(1, tearOffAddRefAddress);
         });
+
+        Assert.Equal(0UL, wrapper.Address % alignment);
 
         // COM IP = alignedCCWAddr + P (= address of IP[0] slot within the CCW).
         // *comIP = vtable; vtable[1] = TearOffAddRefAddr → detected as standard CCW IP.
@@ -537,6 +513,7 @@ public class BuiltInCOMTests
             Assert.Equal(ifacesDirect[i].InterfacePointerAddress.Value, ifacesFromIP[i].InterfacePointerAddress.Value);
             Assert.Equal(ifacesDirect[i].MethodTable.Value, ifacesFromIP[i].MethodTable.Value);
         }
+
     }
 
     [Theory]

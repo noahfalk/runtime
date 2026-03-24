@@ -68,7 +68,8 @@ public static unsafe partial class MockMemorySpace
             _current = address;
         }
 
-        public bool TryAllocate(byte[] initialData, string name, ulong alignment, [NotNullWhen(true)] out HeapFragment? fragment)
+        private bool TryAllocateCore<T>(byte[] initialData, string? name, ulong alignment, [NotNullWhen(true)] out T? fragment)
+            where T : HeapFragment, new()
         {
             ulong current = AlignUp(_current, alignment);
             ulong size = (ulong)initialData.Length;
@@ -76,7 +77,7 @@ public static unsafe partial class MockMemorySpace
             Debug.Assert((current % (ulong)alignment) == 0);
             if (current + size <= _blockEnd)
             {
-                fragment = new HeapFragment
+                fragment = new T
                 {
                     Address = current,
                     Data = initialData,
@@ -90,6 +91,10 @@ public static unsafe partial class MockMemorySpace
             fragment = null;
             return false;
         }
+
+        public bool TryAllocate(byte[] initialData, string? name, ulong alignment, [NotNullWhen(true)] out HeapFragment? fragment)
+            => TryAllocateCore(initialData, name, alignment, out fragment);
+
         private HeapFragment AllocateFragmentCore(byte[] initialData, string name, ulong alignment)
         {
             if (!TryAllocate(initialData, name, alignment, out HeapFragment? fragment))

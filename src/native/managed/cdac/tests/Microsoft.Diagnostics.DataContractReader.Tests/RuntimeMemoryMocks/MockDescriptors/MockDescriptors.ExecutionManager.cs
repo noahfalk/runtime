@@ -287,6 +287,7 @@ public static partial class MockDescriptors
         private readonly MockMemorySpace.BumpAllocator _allocator;
 
         internal TargetPointer EEJitManagerAddress { get; }
+        internal MockMemorySpace.BumpAllocator Allocator => _allocator;
 
         internal ExecutionManager(int version, MockTarget.Architecture arch, AllocationRange allocationRange, TargetPointer allCodeHeaps = default)
             : this(version, new MockMemorySpace.Builder(new TargetTestHelpers(arch)), allocationRange, allCodeHeaps)

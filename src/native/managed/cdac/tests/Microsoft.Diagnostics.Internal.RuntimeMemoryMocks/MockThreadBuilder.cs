@@ -6,58 +6,217 @@ using System.Collections.Generic;
 
 namespace Microsoft.Diagnostics.Internal.RuntimeMemoryMocks;
 
+internal sealed class MockExceptionInfo : TypedView
+{
+    public static Layout<MockExceptionInfo> CreateLayout(MockTarget.Architecture architecture)
+        => new SequentialLayoutBuilder("ExceptionInfo", architecture)
+            .AddPointerField("PreviousNestedInfo")
+            .AddPointerField("ThrownObjectHandle")
+            .AddPointerField("ExceptionWatsonBucketTrackerBuckets")
+            .Build<MockExceptionInfo>();
+
+    public ulong ThrownObjectHandle
+    {
+        get => ReadPointerField("ThrownObjectHandle");
+        set => WritePointerField("ThrownObjectHandle", value);
+    }
+}
+
+internal sealed class MockEEAllocContext : TypedView
+{
+    public static Layout<MockEEAllocContext> CreateLayout(MockTarget.Architecture architecture, Layout<MockGCAllocContext> gcAllocContextLayout)
+        => new SequentialLayoutBuilder("EEAllocContext", architecture)
+            .AddField("GCAllocationContext", gcAllocContextLayout.Size, gcAllocContextLayout)
+            .Build<MockEEAllocContext>();
+
+    public MockGCAllocContext GCAllocationContext
+        => CreateFieldView<MockGCAllocContext>("GCAllocationContext");
+}
+
+internal sealed class MockRuntimeThreadLocals : TypedView
+{
+    public static Layout<MockRuntimeThreadLocals> CreateLayout(MockTarget.Architecture architecture, Layout<MockEEAllocContext> eeAllocContextLayout)
+        => new SequentialLayoutBuilder("RuntimeThreadLocals", architecture)
+            .AddField("AllocContext", eeAllocContextLayout.Size, eeAllocContextLayout)
+            .Build<MockRuntimeThreadLocals>();
+
+    public MockEEAllocContext AllocContext
+        => CreateFieldView<MockEEAllocContext>("AllocContext");
+}
+
+internal sealed class MockThreadData : TypedView
+{
+    public static Layout<MockThreadData> CreateLayout(MockTarget.Architecture architecture)
+        => new SequentialLayoutBuilder("Thread", architecture)
+            .AddUInt32Field("Id")
+            .AddNUIntField("OSId")
+            .AddUInt32Field("State")
+            .AddUInt32Field("PreemptiveGCDisabled")
+            .AddPointerField("RuntimeThreadLocals")
+            .AddPointerField("Frame")
+            .AddPointerField("CachedStackBase")
+            .AddPointerField("CachedStackLimit")
+            .AddPointerField("TEB")
+            .AddPointerField("LastThrownObject")
+            .AddPointerField("LinkNext")
+            .AddPointerField("ExceptionTracker")
+            .AddPointerField("ThreadLocalDataPtr")
+            .AddPointerField("UEWatsonBucketTrackerBuckets")
+            .Build<MockThreadData>();
+
+    public uint Id
+    {
+        get => ReadUInt32Field("Id");
+        set => WriteUInt32Field("Id", value);
+    }
+
+    public ulong OSId
+    {
+        get => ReadPointerField("OSId");
+        set => WritePointerField("OSId", value);
+    }
+
+    public ulong RuntimeThreadLocals
+    {
+        get => ReadPointerField("RuntimeThreadLocals");
+        set => WritePointerField("RuntimeThreadLocals", value);
+    }
+
+    public ulong CachedStackBase
+    {
+        get => ReadPointerField("CachedStackBase");
+        set => WritePointerField("CachedStackBase", value);
+    }
+
+    public ulong CachedStackLimit
+    {
+        get => ReadPointerField("CachedStackLimit");
+        set => WritePointerField("CachedStackLimit", value);
+    }
+
+    public ulong LinkNext
+    {
+        get => ReadPointerField("LinkNext");
+        set => WritePointerField("LinkNext", value);
+    }
+
+    public ulong ExceptionTracker
+    {
+        get => ReadPointerField("ExceptionTracker");
+        set => WritePointerField("ExceptionTracker", value);
+    }
+}
+
+internal sealed class MockThreadStore : TypedView
+{
+    public static Layout<MockThreadStore> CreateLayout(MockTarget.Architecture architecture)
+        => new SequentialLayoutBuilder("ThreadStore", architecture)
+            .AddUInt32Field("ThreadCount")
+            .AddPointerField("FirstThreadLink")
+            .AddUInt32Field("UnstartedCount")
+            .AddUInt32Field("BackgroundCount")
+            .AddUInt32Field("PendingCount")
+            .AddUInt32Field("DeadCount")
+            .Build<MockThreadStore>();
+
+    public int ThreadCount
+    {
+        get => ReadInt32Field("ThreadCount");
+        set => WriteInt32Field("ThreadCount", value);
+    }
+
+    public ulong FirstThreadLink
+    {
+        get => ReadPointerField("FirstThreadLink");
+        set => WritePointerField("FirstThreadLink", value);
+    }
+
+    public int UnstartedCount
+    {
+        get => ReadInt32Field("UnstartedCount");
+        set => WriteInt32Field("UnstartedCount", value);
+    }
+
+    public int BackgroundCount
+    {
+        get => ReadInt32Field("BackgroundCount");
+        set => WriteInt32Field("BackgroundCount", value);
+    }
+
+    public int PendingCount
+    {
+        get => ReadInt32Field("PendingCount");
+        set => WriteInt32Field("PendingCount", value);
+    }
+
+    public int DeadCount
+    {
+        get => ReadInt32Field("DeadCount");
+        set => WriteInt32Field("DeadCount", value);
+    }
+}
+
 public sealed class MockThreadBuilder
 {
     private readonly MockMemorySpace.BumpAllocator _allocator;
-    private readonly MockTarget.Architecture _architecture;
-    private readonly MockDataDescriptorType _exceptionInfoType;
-    private readonly MockDataDescriptorType _threadType;
-    private readonly MockDataDescriptorType _threadStoreType;
-    private readonly MockDataDescriptorType _runtimeThreadLocalsType;
-    private readonly MockDataDescriptorType _eeAllocContextType;
-    private readonly MockDataDescriptorType _gcAllocContextType;
     private readonly Dictionary<ulong, ulong> _exceptionInfosByThread = [];
+    private readonly Dictionary<ulong, MockThreadData> _threads = [];
 
     private ulong _previousThreadAddress;
-    private ulong _threadStoreAddress;
+    private readonly MockThreadStore _threadStore;
+    private readonly MockThreadData _finalizerThread;
+    private readonly MockThreadData _gcThread;
 
     internal MockThreadBuilder(MockMemorySpace.BumpAllocator allocator, MockTarget.Architecture architecture)
     {
         _allocator = allocator;
-        _architecture = architecture;
 
-        ThreadDescriptorTypes types = CreateTypes(architecture);
-        _exceptionInfoType = types.ExceptionInfo;
-        _threadType = types.Thread;
-        _threadStoreType = types.ThreadStore;
-        _runtimeThreadLocalsType = types.RuntimeThreadLocals;
-        _eeAllocContextType = types.EEAllocContext;
-        _gcAllocContextType = types.GCAllocContext;
+        ExceptionInfoLayout = MockExceptionInfo.CreateLayout(architecture);
+        GCAllocContextLayout = MockGCAllocContext.CreateLayout(architecture);
+        EEAllocContextLayout = MockEEAllocContext.CreateLayout(architecture, GCAllocContextLayout);
+        RuntimeThreadLocalsLayout = MockRuntimeThreadLocals.CreateLayout(architecture, EEAllocContextLayout);
+        ThreadLayout = MockThreadData.CreateLayout(architecture);
+        ThreadStoreLayout = MockThreadStore.CreateLayout(architecture);
 
-        _threadStoreAddress = _allocator.AllocateFragment((ulong)GetRequiredSize(_threadStoreType), "ThreadStore").Address;
-        ThreadStoreGlobalAddress = _allocator.AllocatePointer(_threadStoreAddress, "[global pointer] ThreadStore");
+        _threadStore = ThreadStoreLayout.Allocate(_allocator, "ThreadStore");
+        ThreadStoreGlobalAddress = _allocator.AllocatePointer(_threadStore.Address, "[global pointer] ThreadStore");
 
-        FinalizerThreadAddress = _allocator.AllocateFragment((ulong)GetRequiredSize(_threadType), "Finalizer thread").Address;
-        FinalizerThreadGlobalAddress = _allocator.AllocatePointer(FinalizerThreadAddress, "[global pointer] Finalizer thread");
+        _finalizerThread = ThreadLayout.Allocate(_allocator, "Finalizer thread");
+        FinalizerThreadGlobalAddress = _allocator.AllocatePointer(_finalizerThread.Address, "[global pointer] Finalizer thread");
 
-        GCThreadAddress = _allocator.AllocateFragment((ulong)GetRequiredSize(_threadType), "GC thread").Address;
-        GCThreadGlobalAddress = _allocator.AllocatePointer(GCThreadAddress, "[global pointer] GC thread");
+        _gcThread = ThreadLayout.Allocate(_allocator, "GC thread");
+        GCThreadGlobalAddress = _allocator.AllocatePointer(_gcThread.Address, "[global pointer] GC thread");
     }
 
     public ulong ThreadStoreGlobalAddress { get; }
+
     public ulong FinalizerThreadGlobalAddress { get; }
-    public ulong FinalizerThreadAddress { get; }
+
+    public ulong FinalizerThreadAddress => _finalizerThread.Address;
+
     public ulong GCThreadGlobalAddress { get; }
-    public ulong GCThreadAddress { get; }
+
+    public ulong GCThreadAddress => _gcThread.Address;
+
+    internal Layout<MockExceptionInfo> ExceptionInfoLayout { get; }
+
+    internal Layout<MockThreadData> ThreadLayout { get; }
+
+    internal Layout<MockThreadStore> ThreadStoreLayout { get; }
+
+    internal Layout<MockRuntimeThreadLocals> RuntimeThreadLocalsLayout { get; }
+
+    internal Layout<MockEEAllocContext> EEAllocContextLayout { get; }
+
+    internal Layout<MockGCAllocContext> GCAllocContextLayout { get; }
 
     public void SetThreadCounts(int threadCount, int unstartedCount, int backgroundCount, int pendingCount, int deadCount)
     {
-        Span<byte> data = BorrowFragmentData(_threadStoreAddress, _threadStoreType);
-        WriteInt32(data, _threadStoreType.GetFieldOffset("ThreadCount"), threadCount);
-        WriteInt32(data, _threadStoreType.GetFieldOffset("UnstartedCount"), unstartedCount);
-        WriteInt32(data, _threadStoreType.GetFieldOffset("BackgroundCount"), backgroundCount);
-        WriteInt32(data, _threadStoreType.GetFieldOffset("PendingCount"), pendingCount);
-        WriteInt32(data, _threadStoreType.GetFieldOffset("DeadCount"), deadCount);
+        _threadStore.ThreadCount = threadCount;
+        _threadStore.UnstartedCount = unstartedCount;
+        _threadStore.BackgroundCount = backgroundCount;
+        _threadStore.PendingCount = pendingCount;
+        _threadStore.DeadCount = deadCount;
     }
 
     public ulong AddThread(uint id, ulong osId)
@@ -65,55 +224,46 @@ public sealed class MockThreadBuilder
 
     public ulong AddThread(uint id, ulong osId, long allocBytes, long allocBytesLoh)
     {
-        MockMemorySpace.HeapFragment exceptionInfoFragment = _allocator.AllocateFragment((ulong)GetRequiredSize(_exceptionInfoType), "ExceptionInfo");
-        MockMemorySpace.HeapFragment runtimeThreadLocalsFragment = _allocator.AllocateFragment((ulong)GetRequiredSize(_runtimeThreadLocalsType), "RuntimeThreadLocals");
-        MockMemorySpace.HeapFragment threadFragment = _allocator.AllocateFragment((ulong)GetRequiredSize(_threadType), "Thread");
+        MockExceptionInfo exceptionInfo = ExceptionInfoLayout.Allocate(_allocator, "ExceptionInfo");
+        MockRuntimeThreadLocals runtimeThreadLocals = RuntimeThreadLocalsLayout.Allocate(_allocator, "RuntimeThreadLocals");
+        MockThreadData thread = ThreadLayout.Allocate(_allocator, "Thread");
 
-        Span<byte> threadData = threadFragment.Data;
-        WriteUInt32(threadData, _threadType.GetFieldOffset("Id"), id);
-        WritePointer(threadData, _threadType.GetFieldOffset("OSId"), osId);
-        WritePointer(threadData, _threadType.GetFieldOffset("ExceptionTracker"), exceptionInfoFragment.Address);
-        WritePointer(threadData, _threadType.GetFieldOffset("RuntimeThreadLocals"), runtimeThreadLocalsFragment.Address);
+        thread.Id = id;
+        thread.OSId = osId;
+        thread.ExceptionTracker = exceptionInfo.Address;
+        thread.RuntimeThreadLocals = runtimeThreadLocals.Address;
 
-        Span<byte> runtimeThreadLocalsData = runtimeThreadLocalsFragment.Data;
-        int allocContextOffset = _runtimeThreadLocalsType.GetFieldOffset("AllocContext");
-        int gcAllocationContextOffset = _eeAllocContextType.GetFieldOffset("GCAllocationContext");
-        int allocBytesOffset = _gcAllocContextType.GetFieldOffset("AllocBytes");
-        int allocBytesLohOffset = _gcAllocContextType.GetFieldOffset("AllocBytesLoh");
-        int baseOffset = checked(allocContextOffset + gcAllocationContextOffset);
-        WriteInt64(runtimeThreadLocalsData, checked(baseOffset + allocBytesOffset), allocBytes);
-        WriteInt64(runtimeThreadLocalsData, checked(baseOffset + allocBytesLohOffset), allocBytesLoh);
+        MockGCAllocContext gcAllocContext = runtimeThreadLocals.AllocContext.GCAllocationContext;
+        gcAllocContext.AllocBytes = allocBytes;
+        gcAllocContext.AllocBytesLoh = allocBytesLoh;
 
-        ulong threadLinkAddress = threadFragment.Address + (ulong)_threadType.GetFieldOffset("LinkNext");
+        ulong threadLinkAddress = thread.Address + (ulong)ThreadLayout.GetField("LinkNext").Offset;
         if (_previousThreadAddress == 0)
         {
-            WritePointer(
-                BorrowAddressRange(_threadStoreAddress + (ulong)_threadStoreType.GetFieldOffset("FirstThreadLink"), _architecture.PointerSize),
-                threadLinkAddress);
+            _threadStore.FirstThreadLink = threadLinkAddress;
         }
         else
         {
-            WritePointer(
-                BorrowAddressRange(_previousThreadAddress + (ulong)_threadType.GetFieldOffset("LinkNext"), _architecture.PointerSize),
-                threadLinkAddress);
+            _threads[_previousThreadAddress].LinkNext = threadLinkAddress;
         }
 
-        _previousThreadAddress = threadFragment.Address;
-        _exceptionInfosByThread[threadFragment.Address] = exceptionInfoFragment.Address;
-        return threadFragment.Address;
+        _previousThreadAddress = thread.Address;
+        _threads[thread.Address] = thread;
+        _exceptionInfosByThread[thread.Address] = exceptionInfo.Address;
+        return thread.Address;
     }
 
     public void SetStackLimits(ulong threadAddress, ulong stackBase, ulong stackLimit)
     {
-        Span<byte> data = BorrowFragmentData(threadAddress, _threadType);
-        WritePointer(data, _threadType.GetFieldOffset("CachedStackBase"), stackBase);
-        WritePointer(data, _threadType.GetFieldOffset("CachedStackLimit"), stackLimit);
+        MockThreadData thread = GetRequiredThread(threadAddress);
+        thread.CachedStackBase = stackBase;
+        thread.CachedStackLimit = stackLimit;
     }
 
     public void SetExceptionTracker(ulong threadAddress, ulong exceptionInfoAddress)
     {
-        Span<byte> data = BorrowFragmentData(threadAddress, _threadType);
-        WritePointer(data, _threadType.GetFieldOffset("ExceptionTracker"), exceptionInfoAddress);
+        MockThreadData thread = GetRequiredThread(threadAddress);
+        thread.ExceptionTracker = exceptionInfoAddress;
 
         if (exceptionInfoAddress == 0)
         {
@@ -127,150 +277,48 @@ public sealed class MockThreadBuilder
 
     public ulong SetThrownObjectHandle(ulong threadAddress, ulong objectAddress)
     {
-        ulong exceptionInfoAddress = GetRequiredExceptionInfoAddress(threadAddress);
+        MockExceptionInfo exceptionInfo = GetRequiredExceptionInfo(threadAddress);
         ulong handleAddress = _allocator.AllocatePointer(objectAddress, "ThrownObjectHandle");
-        Span<byte> exceptionInfoData = BorrowFragmentData(exceptionInfoAddress, _exceptionInfoType);
-        WritePointer(exceptionInfoData, _exceptionInfoType.GetFieldOffset("ThrownObjectHandle"), handleAddress);
+        exceptionInfo.ThrownObjectHandle = handleAddress;
         return handleAddress;
     }
 
-    private static ThreadDescriptorTypes CreateTypes(MockTarget.Architecture architecture)
+    private MockThreadData GetRequiredThread(ulong threadAddress)
     {
-        MockDataDescriptorBuilder descriptor = new()
+        if (_threads.TryGetValue(threadAddress, out MockThreadData? thread))
         {
-            PointerSize = architecture.PointerSize,
-        };
+            return thread;
+        }
 
-        return AddTypes(descriptor);
+        throw new InvalidOperationException($"No thread is associated with address 0x{threadAddress:x}.");
     }
 
-    private static int GetRequiredSize(MockDataDescriptorType type)
-        => checked((int)(type.Size ?? throw new InvalidOperationException("Expected descriptor type size to be populated.")));
-
-    private ulong GetRequiredExceptionInfoAddress(ulong threadAddress)
+    private MockExceptionInfo GetRequiredExceptionInfo(ulong threadAddress)
     {
         if (_exceptionInfosByThread.TryGetValue(threadAddress, out ulong exceptionInfoAddress))
         {
-            return exceptionInfoAddress;
+            return CreateViewAtAddress(exceptionInfoAddress, ExceptionInfoLayout);
         }
 
         throw new InvalidOperationException($"No exception info is associated with thread 0x{threadAddress:x}.");
     }
 
-    private Span<byte> BorrowFragmentData(ulong address, MockDataDescriptorType type)
-        => BorrowAddressRange(address, GetRequiredSize(type));
-
-    private Span<byte> BorrowAddressRange(ulong address, int length)
+    private TView CreateViewAtAddress<TView>(ulong address, Layout<TView> layout)
+        where TView : TypedView, new()
     {
         foreach (MockMemorySpace.HeapFragment fragment in _allocator.Allocations)
         {
-            if (address >= fragment.Address && address + (ulong)length <= fragment.Address + (ulong)fragment.Data.Length)
+            ulong fragmentEnd = fragment.Address + (ulong)fragment.Data.Length;
+            ulong requestedEnd = address + (ulong)layout.Size;
+            if (address >= fragment.Address && requestedEnd <= fragmentEnd)
             {
-                return fragment.Data.AsSpan((int)(address - fragment.Address), length);
+                int offset = checked((int)(address - fragment.Address));
+                return layout.Create(fragment.Data.AsMemory(offset, layout.Size), address);
             }
         }
 
-        throw new InvalidOperationException($"No tracked fragment includes addresses from 0x{address:x} with length {length}.");
+        throw new InvalidOperationException($"No tracked fragment includes addresses from 0x{address:x} with length {layout.Size}.");
     }
-
-    private void WriteInt32(Span<byte> destination, int offset, int value)
-    {
-        SpanWriter writer = new(_architecture, destination.Slice(offset, sizeof(int)));
-        writer.Write(value);
-    }
-
-    private void WriteInt64(Span<byte> destination, int offset, long value)
-    {
-        SpanWriter writer = new(_architecture, destination.Slice(offset, sizeof(long)));
-        writer.Write(unchecked((ulong)value));
-    }
-
-    private void WriteUInt32(Span<byte> destination, int offset, uint value)
-    {
-        SpanWriter writer = new(_architecture, destination.Slice(offset, sizeof(uint)));
-        writer.Write(value);
-    }
-
-    private void WritePointer(Span<byte> destination, int offset, ulong value)
-    {
-        SpanWriter writer = new(_architecture, destination.Slice(offset, _architecture.PointerSize));
-        writer.WritePointer(value);
-    }
-
-    private void WritePointer(Span<byte> destination, ulong value)
-    {
-        SpanWriter writer = new(_architecture, destination);
-        writer.WritePointer(value);
-    }
-
-    private readonly record struct ThreadDescriptorTypes(
-        MockDataDescriptorType ExceptionInfo,
-        MockDataDescriptorType Thread,
-        MockDataDescriptorType ThreadStore,
-        MockDataDescriptorType RuntimeThreadLocals,
-        MockDataDescriptorType EEAllocContext,
-        MockDataDescriptorType GCAllocContext);
-
-    private static ThreadDescriptorTypes AddTypes(MockDataDescriptorBuilder descriptor)
-    {
-        MockDataDescriptorType exceptionInfo = descriptor.AddSequentialType("ExceptionInfo", type =>
-        {
-            type.AddPointerField("PreviousNestedInfo");
-            type.AddPointerField("ThrownObjectHandle");
-            type.AddPointerField("ExceptionWatsonBucketTrackerBuckets");
-        });
-
-        MockDataDescriptorType gcAllocContext = descriptor.AddSequentialType("GCAllocContext", type =>
-        {
-            type.AddPointerField("Pointer");
-            type.AddPointerField("Limit");
-            type.AddInt64Field("AllocBytes");
-            type.AddInt64Field("AllocBytesLoh");
-        });
-
-        MockDataDescriptorType eeAllocContext = descriptor.AddSequentialType("EEAllocContext", type =>
-        {
-            type.AddField("GCAllocationContext", GetRequiredSize(gcAllocContext), "GCAllocContext");
-        });
-
-        MockDataDescriptorType runtimeThreadLocals = descriptor.AddSequentialType("RuntimeThreadLocals", type =>
-        {
-            type.AddField("AllocContext", GetRequiredSize(eeAllocContext), "EEAllocContext");
-        });
-
-        MockDataDescriptorType thread = descriptor.AddSequentialType("Thread", type =>
-        {
-            type.AddUInt32Field("Id");
-            type.AddNUIntField("OSId");
-            type.AddUInt32Field("State");
-            type.AddUInt32Field("PreemptiveGCDisabled");
-            type.AddPointerField("RuntimeThreadLocals");
-            type.AddPointerField("Frame");
-            type.AddPointerField("CachedStackBase");
-            type.AddPointerField("CachedStackLimit");
-            type.AddPointerField("TEB");
-            type.AddPointerField("LastThrownObject");
-            type.AddPointerField("LinkNext");
-            type.AddPointerField("ExceptionTracker");
-            type.AddPointerField("ThreadLocalDataPtr");
-            type.AddPointerField("UEWatsonBucketTrackerBuckets");
-        });
-
-        MockDataDescriptorType threadStore = descriptor.AddSequentialType("ThreadStore", type =>
-        {
-            type.AddUInt32Field("ThreadCount");
-            type.AddPointerField("FirstThreadLink");
-            type.AddUInt32Field("UnstartedCount");
-            type.AddUInt32Field("BackgroundCount");
-            type.AddUInt32Field("PendingCount");
-            type.AddUInt32Field("DeadCount");
-        });
-
-        return new ThreadDescriptorTypes(exceptionInfo, thread, threadStore, runtimeThreadLocals, eeAllocContext, gcAllocContext);
-    }
-
-    internal static void AddDescriptorTypes(MockDataDescriptorBuilder descriptor)
-        => AddTypes(descriptor);
 }
 
 public static class MockThreadBuilderExtensions
@@ -289,7 +337,12 @@ public static class MockThreadBuilderExtensions
         {
             module.AddDataDescriptor(descriptor =>
             {
-                MockThreadBuilder.AddDescriptorTypes(descriptor);
+                descriptor.AddType(config.ExceptionInfoLayout);
+                descriptor.AddType(config.GCAllocContextLayout);
+                descriptor.AddType(config.EEAllocContextLayout);
+                descriptor.AddType(config.RuntimeThreadLocalsLayout);
+                descriptor.AddType(config.ThreadLayout);
+                descriptor.AddType(config.ThreadStoreLayout);
                 descriptor
                     .AddContract(ThreadContractName, 1)
                     .AddGlobalValue("ThreadStore", config.ThreadStoreGlobalAddress)

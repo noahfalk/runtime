@@ -2,9 +2,150 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
-using System.Collections.Generic;
 
 namespace Microsoft.Diagnostics.Internal.RuntimeMemoryMocks;
+
+internal sealed class MockGCAllocContext : TypedView
+{
+    public static Layout<MockGCAllocContext> CreateLayout(MockTarget.Architecture architecture)
+        => new SequentialLayoutBuilder("GCAllocContext", architecture)
+            .AddPointerField("Pointer")
+            .AddPointerField("Limit")
+            .AddInt64Field("AllocBytes")
+            .AddInt64Field("AllocBytesLoh")
+            .Build<MockGCAllocContext>();
+
+    public ulong Pointer
+    {
+        get => ReadPointerField("Pointer");
+        set => WritePointerField("Pointer", value);
+    }
+
+    public ulong Limit
+    {
+        get => ReadPointerField("Limit");
+        set => WritePointerField("Limit", value);
+    }
+
+    public long AllocBytes
+    {
+        get => ReadInt64Field("AllocBytes");
+        set => WriteInt64Field("AllocBytes", value);
+    }
+
+    public long AllocBytesLoh
+    {
+        get => ReadInt64Field("AllocBytesLoh");
+        set => WriteInt64Field("AllocBytesLoh", value);
+    }
+}
+
+internal sealed class MockGeneration : TypedView
+{
+    public static Layout<MockGeneration> CreateLayout(MockTarget.Architecture architecture, Layout<MockGCAllocContext> allocContextLayout)
+        => new SequentialLayoutBuilder("Generation", architecture)
+            .AddField("AllocationContext", allocContextLayout.Size, allocContextLayout)
+            .AddPointerField("StartSegment")
+            .AddPointerField("AllocationStart")
+            .Build<MockGeneration>();
+
+    public MockGCAllocContext AllocationContext
+        => CreateFieldView<MockGCAllocContext>("AllocationContext");
+
+    public ulong StartSegment
+    {
+        get => ReadPointerField("StartSegment");
+        set => WritePointerField("StartSegment", value);
+    }
+
+    public ulong AllocationStart
+    {
+        get => ReadPointerField("AllocationStart");
+        set => WritePointerField("AllocationStart", value);
+    }
+}
+
+internal sealed class MockCFinalize : TypedView
+{
+    public static Layout<MockCFinalize> CreateLayout(MockTarget.Architecture architecture)
+        => new SequentialLayoutBuilder("CFinalize", architecture)
+            .AddPointerField("FillPointers")
+            .Build<MockCFinalize>();
+
+    public void SetFillPointer(int index, ulong value)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+
+        int offset = checked(Layout.GetField("FillPointers").Offset + (index * Architecture.PointerSize));
+        WritePointer(Memory.Span.Slice(offset, Architecture.PointerSize), value);
+    }
+}
+
+internal sealed class MockOomHistory : TypedView
+{
+    public static Layout<MockOomHistory> CreateLayout(MockTarget.Architecture architecture)
+        => new SequentialLayoutBuilder("OomHistory", architecture)
+            .AddUInt32Field("Reason")
+            .AddNUIntField("AllocSize")
+            .AddPointerField("Reserved")
+            .AddPointerField("Allocated")
+            .AddNUIntField("GcIndex")
+            .AddUInt32Field("Fgm")
+            .AddNUIntField("Size")
+            .AddNUIntField("AvailablePagefileMb")
+            .AddUInt32Field("LohP")
+            .Build<MockOomHistory>();
+}
+
+internal sealed class MockGCHeap : TypedView
+{
+    internal const int InterestingDataCount = 9;
+    internal const int CompactReasonsCount = 12;
+    internal const int ExpandMechanismsCount = 6;
+    internal const int InterestingMechanismBitsCount = 2;
+
+    public static Layout<MockGCHeap> CreateLayout(
+        MockTarget.Architecture architecture,
+        Layout<MockGeneration> generationLayout,
+        Layout<MockOomHistory> oomHistoryLayout,
+        uint totalGenerationCount)
+        => new SequentialLayoutBuilder("GCHeap", architecture)
+            .AddPointerField("MarkArray")
+            .AddPointerField("NextSweepObj")
+            .AddPointerField("BackgroundMinSavedAddr")
+            .AddPointerField("BackgroundMaxSavedAddr")
+            .AddPointerField("AllocAllocated")
+            .AddPointerField("EphemeralHeapSegment")
+            .AddPointerField("CardTable")
+            .AddPointerField("FinalizeQueue")
+            .AddField("GenerationTable", checked(generationLayout.Size * (int)totalGenerationCount), generationLayout)
+            .AddField("OomData", oomHistoryLayout.Size, oomHistoryLayout)
+            .AddField("InterestingData", checked(architecture.PointerSize * InterestingDataCount))
+            .AddField("CompactReasons", checked(architecture.PointerSize * CompactReasonsCount))
+            .AddField("ExpandMechanisms", checked(architecture.PointerSize * ExpandMechanismsCount))
+            .AddField("InterestingMechanismBits", checked(architecture.PointerSize * InterestingMechanismBitsCount))
+            .AddPointerField("InternalRootArray")
+            .AddNUIntField("InternalRootArrayIndex")
+            .AddInt32Field("HeapAnalyzeSuccess")
+            .Build<MockGCHeap>();
+
+    public ulong FinalizeQueue
+    {
+        get => ReadPointerField("FinalizeQueue");
+        set => WritePointerField("FinalizeQueue", value);
+    }
+
+    public TypedArrayView<MockGeneration> GenerationTable
+    {
+        get
+        {
+            LayoutField layoutField = Layout.GetField("GenerationTable");
+            Layout<MockGeneration> generationLayout = (Layout<MockGeneration>)(layoutField.Type
+                ?? throw new InvalidOperationException("GenerationTable layout is required."));
+            return generationLayout.CreateArray(GetFieldMemory("GenerationTable"), GetFieldAddress("GenerationTable"));
+        }
+    }
+}
 
 /// <summary>
 /// Configuration object for GC heap mock data, used with
@@ -17,8 +158,36 @@ public sealed class MockGCHeapBuilder
     private const int DefaultGenerationCount = 4;
     private const int ExtraSegCount = 2;
 
+    private readonly MockMemorySpace.BumpAllocator _allocator;
+    private readonly MockTarget.Architecture _architecture;
+
+    internal MockGCHeapBuilder(MockMemorySpace.Builder memoryBuilder)
+    {
+        ArgumentNullException.ThrowIfNull(memoryBuilder);
+
+        _allocator = memoryBuilder.DefaultAllocator;
+        _architecture = memoryBuilder.TargetTestHelpers.Arch;
+
+        GCAllocContextLayout = MockGCAllocContext.CreateLayout(_architecture);
+        GenerationLayout = MockGeneration.CreateLayout(_architecture, GCAllocContextLayout);
+        CFinalizeLayout = MockCFinalize.CreateLayout(_architecture);
+        OomHistoryLayout = MockOomHistory.CreateLayout(_architecture);
+    }
+
     public GenerationInput[] Generations { get; set; } = new GenerationInput[DefaultGenerationCount];
+
     public ulong[] FillPointers { get; set; } = new ulong[DefaultGenerationCount + ExtraSegCount];
+
+    internal Layout<MockGCAllocContext> GCAllocContextLayout { get; }
+
+    internal Layout<MockGeneration> GenerationLayout { get; }
+
+    internal Layout<MockCFinalize> CFinalizeLayout { get; }
+
+    internal Layout<MockOomHistory> OomHistoryLayout { get; }
+
+    internal Layout<MockGCHeap> GCHeapLayout
+        => MockGCHeap.CreateLayout(_architecture, GenerationLayout, OomHistoryLayout, TotalGenerationCount);
 
     public record struct GenerationInput
     {
@@ -27,28 +196,120 @@ public sealed class MockGCHeapBuilder
         public ulong AllocContextPointer { get; set; }
         public ulong AllocContextLimit { get; set; }
     }
+
+    internal uint TotalGenerationCount => checked((uint)Generations.Length);
+
+    internal uint FillPointerCount => checked((uint)FillPointers.Length);
+
+    internal static void PopulateGeneration(MockGeneration generationView, GenerationInput generation)
+    {
+        MockGCAllocContext allocContext = generationView.AllocationContext;
+        allocContext.Pointer = generation.AllocContextPointer;
+        allocContext.Limit = generation.AllocContextLimit;
+        generationView.StartSegment = generation.StartSegment;
+        generationView.AllocationStart = generation.AllocationStart;
+    }
+
+    internal TypedArrayView<MockGeneration> AllocateGenerationTable()
+    {
+        TypedArrayView<MockGeneration> generationTable = GenerationLayout.AllocateArray(_allocator, Generations.Length);
+        for (int i = 0; i < Generations.Length; i++)
+        {
+            PopulateGeneration(generationTable.GetElement(i), Generations[i]);
+        }
+
+        return generationTable;
+    }
+
+    internal MockCFinalize AllocateCFinalize()
+    {
+        int fillPointerOffset = CFinalizeLayout.GetField("FillPointers").Offset;
+        MockMemorySpace.HeapFragment fragment = _allocator.AllocateFragment(
+            (ulong)checked(fillPointerOffset + (_architecture.PointerSize * FillPointers.Length)));
+        MockCFinalize cFinalize = CFinalizeLayout.Create(fragment);
+        for (int i = 0; i < FillPointers.Length; i++)
+        {
+            cFinalize.SetFillPointer(i, FillPointers[i]);
+        }
+
+        return cFinalize;
+    }
+
+    internal MockGCHeap AllocateGCHeap(ulong cFinalizeAddress)
+    {
+        MockGCHeap gcHeap = GCHeapLayout.Allocate(_allocator);
+        gcHeap.FinalizeQueue = cFinalizeAddress;
+
+        TypedArrayView<MockGeneration> generationTable = gcHeap.GenerationTable;
+        for (int i = 0; i < Generations.Length; i++)
+        {
+            PopulateGeneration(generationTable.GetElement(i), Generations[i]);
+        }
+
+        return gcHeap;
+    }
 }
 
 public static class MockGCHeapBuilderExtensions
 {
     private const string GCContractName = "GC";
-    private const string GCAllocContextTypeName = "GCAllocContext";
-    private const string GenerationTypeName = "Generation";
-    private const string CFinalizeTypeName = "CFinalize";
-    private const string OomHistoryTypeName = "OomHistory";
-    private const string GCHeapTypeName = "GCHeap";
-    private const int InterestingDataCount = 9;
-    private const int CompactReasonsCount = 12;
-    private const int ExpandMechanismsCount = 6;
-    private const int InterestingMechanismBitsCount = 2;
 
     public static MockProcessBuilder AddGCHeapWks(
         this MockProcessBuilder processBuilder,
         Action<MockGCHeapBuilder> configure)
     {
-        MockGCHeapBuilder config = new();
-        configure(config);
-        BuildWksHeap(processBuilder, config);
+        MockGCHeapBuilder gcHeapBuilder = new(processBuilder.MemoryBuilder);
+        configure(gcHeapBuilder);
+
+        processBuilder.AddCoreClr(module =>
+        {
+            module.AddDataDescriptor(descriptorBuilder =>
+            {
+                TypedArrayView<MockGeneration> generationTable = gcHeapBuilder.AllocateGenerationTable();
+                MockCFinalize cFinalize = gcHeapBuilder.AllocateCFinalize();
+                MockOomHistory oomHistory = gcHeapBuilder.OomHistoryLayout.Allocate(processBuilder.MemoryBuilder.DefaultAllocator);
+                descriptorBuilder.AddType(gcHeapBuilder.GCAllocContextLayout);
+                descriptorBuilder.AddType(gcHeapBuilder.GenerationLayout);
+                descriptorBuilder.AddType(gcHeapBuilder.CFinalizeLayout);
+                descriptorBuilder.AddType(gcHeapBuilder.OomHistoryLayout);
+
+                descriptorBuilder
+                    .AddContract(GCContractName, 1)
+                    .AddGlobalValue("TotalGenerationCount", gcHeapBuilder.TotalGenerationCount)
+                    .AddGlobalValue("CFinalizeFillPointersLength", gcHeapBuilder.FillPointerCount)
+                    .AddGlobalValue("InterestingDataLength", 0)
+                    .AddGlobalValue("CompactReasonsLength", 0)
+                    .AddGlobalValue("ExpandMechanismsLength", 0)
+                    .AddGlobalValue("InterestingMechanismBitsLength", 0)
+                    .AddGlobalValue("HandlesPerBlock", 32)
+                    .AddGlobalValue("BlockInvalid", 1)
+                    .AddGlobalValue("DebugDestroyedHandleValue", 0)
+                    .AddGlobalValue("HandleMaxInternalTypes", 12)
+                    .AddGlobalValue("GCHeapMarkArray", processBuilder.MemoryBuilder.DefaultAllocator.AllocatePointer(0))
+                    .AddGlobalValue("GCHeapNextSweepObj", processBuilder.MemoryBuilder.DefaultAllocator.AllocatePointer(0))
+                    .AddGlobalValue("GCHeapBackgroundMinSavedAddr", processBuilder.MemoryBuilder.DefaultAllocator.AllocatePointer(0))
+                    .AddGlobalValue("GCHeapBackgroundMaxSavedAddr", processBuilder.MemoryBuilder.DefaultAllocator.AllocatePointer(0))
+                    .AddGlobalValue("GCHeapAllocAllocated", processBuilder.MemoryBuilder.DefaultAllocator.AllocatePointer(0))
+                    .AddGlobalValue("GCHeapEphemeralHeapSegment", processBuilder.MemoryBuilder.DefaultAllocator.AllocatePointer(0))
+                    .AddGlobalValue("GCHeapCardTable", processBuilder.MemoryBuilder.DefaultAllocator.AllocatePointer(0))
+                    .AddGlobalValue("GCHeapFinalizeQueue", processBuilder.MemoryBuilder.DefaultAllocator.AllocatePointer(cFinalize.Address))
+                    .AddGlobalValue("GCHeapGenerationTable", generationTable.Address)
+                    .AddGlobalValue("GCHeapOomData", oomHistory.Address)
+                    .AddGlobalValue("GCHeapInternalRootArray", processBuilder.MemoryBuilder.DefaultAllocator.AllocatePointer(0))
+                    .AddGlobalValue("GCHeapInternalRootArrayIndex", processBuilder.MemoryBuilder.DefaultAllocator.AllocatePointer(0))
+                    .AddGlobalValue("GCHeapHeapAnalyzeSuccess", processBuilder.MemoryBuilder.DefaultAllocator.AllocateInt32(0))
+                    .AddGlobalValue("GCHeapInterestingData", processBuilder.MemoryBuilder.DefaultAllocator.AllocatePointer(0))
+                    .AddGlobalValue("GCHeapCompactReasons", processBuilder.MemoryBuilder.DefaultAllocator.AllocatePointer(0))
+                    .AddGlobalValue("GCHeapExpandMechanisms", processBuilder.MemoryBuilder.DefaultAllocator.AllocatePointer(0))
+                    .AddGlobalValue("GCHeapInterestingMechanismBits", processBuilder.MemoryBuilder.DefaultAllocator.AllocatePointer(0))
+                    .AddGlobalValue("GCLowestAddress", processBuilder.MemoryBuilder.DefaultAllocator.AllocatePointer(0x1000))
+                    .AddGlobalValue("GCHighestAddress", processBuilder.MemoryBuilder.DefaultAllocator.AllocatePointer(0xFFFF_0000))
+                    .AddGlobalValue("StructureInvalidCount", processBuilder.MemoryBuilder.DefaultAllocator.AllocateInt32(0))
+                    .AddGlobalValue("MaxGeneration", processBuilder.MemoryBuilder.DefaultAllocator.AllocateUInt32(gcHeapBuilder.TotalGenerationCount - 1))
+                    .AddGlobalString("GCIdentifiers", "workstation,segments");
+            });
+        });
+
         return processBuilder;
     }
 
@@ -57,198 +318,28 @@ public static class MockGCHeapBuilderExtensions
         Action<MockGCHeapBuilder> configure,
         out ulong heapAddress)
     {
-        MockGCHeapBuilder config = new();
-        configure(config);
-        heapAddress = BuildSvrHeap(processBuilder, config);
-        return processBuilder;
-    }
-
-    private static Dictionary<string, MockDataDescriptorType> GetBaseTypes(MockDataDescriptorBuilder descriptorBuilder)
-    {
-        MockDataDescriptorType allocContextType = descriptorBuilder.AddSequentialType(GCAllocContextTypeName, typeBuilder =>
-        {
-            typeBuilder.AddPointerField("Pointer");
-            typeBuilder.AddPointerField("Limit");
-            typeBuilder.AddInt64Field("AllocBytes");
-            typeBuilder.AddInt64Field("AllocBytesLoh");
-        });
-
-        MockDataDescriptorType generationType = descriptorBuilder.AddSequentialType(GenerationTypeName, typeBuilder =>
-        {
-            typeBuilder.AddField("AllocationContext", checked((int)(allocContextType.Size ?? 0)));
-            typeBuilder.AddPointerField("StartSegment");
-            typeBuilder.AddPointerField("AllocationStart");
-        });
-
-        MockDataDescriptorType cFinalizeType = descriptorBuilder.AddSequentialType(CFinalizeTypeName, typeBuilder =>
-        {
-            typeBuilder.AddPointerField("FillPointers");
-        });
-
-        MockDataDescriptorType oomHistoryType = descriptorBuilder.AddSequentialType(OomHistoryTypeName, typeBuilder =>
-        {
-            typeBuilder.AddUInt32Field("Reason");
-            typeBuilder.AddNUIntField("AllocSize");
-            typeBuilder.AddPointerField("Reserved");
-            typeBuilder.AddPointerField("Allocated");
-            typeBuilder.AddNUIntField("GcIndex");
-            typeBuilder.AddUInt32Field("Fgm");
-            typeBuilder.AddNUIntField("Size");
-            typeBuilder.AddNUIntField("AvailablePagefileMb");
-            typeBuilder.AddUInt32Field("LohP");
-        });
-
-        return new Dictionary<string, MockDataDescriptorType>(StringComparer.Ordinal)
-        {
-            [GCAllocContextTypeName] = allocContextType,
-            [GenerationTypeName] = generationType,
-            [CFinalizeTypeName] = cFinalizeType,
-            [OomHistoryTypeName] = oomHistoryType,
-        };
-    }
-
-    private static Dictionary<string, MockDataDescriptorType> GetSvrTypes(
-        MockDataDescriptorBuilder descriptorBuilder,
-        MockTarget.Architecture architecture,
-        uint totalGenerationCount)
-    {
-        Dictionary<string, MockDataDescriptorType> baseTypes = GetBaseTypes(descriptorBuilder);
-        uint generationSize = baseTypes[GenerationTypeName].Size ?? throw new InvalidOperationException("Generation size is required.");
-        uint oomHistorySize = baseTypes[OomHistoryTypeName].Size ?? throw new InvalidOperationException("OomHistory size is required.");
-
-        int pointerSize = architecture.PointerSize;
-        MockDataDescriptorType gcHeapType = descriptorBuilder.AddSequentialType(GCHeapTypeName, typeBuilder =>
-        {
-            typeBuilder.AddPointerField("MarkArray");
-            typeBuilder.AddPointerField("NextSweepObj");
-            typeBuilder.AddPointerField("BackgroundMinSavedAddr");
-            typeBuilder.AddPointerField("BackgroundMaxSavedAddr");
-            typeBuilder.AddPointerField("AllocAllocated");
-            typeBuilder.AddPointerField("EphemeralHeapSegment");
-            typeBuilder.AddPointerField("CardTable");
-            typeBuilder.AddPointerField("FinalizeQueue");
-
-            typeBuilder.AddField("GenerationTable", checked((int)(generationSize * totalGenerationCount)));
-            typeBuilder.AddField("OomData", checked((int)oomHistorySize));
-            typeBuilder.AddField("InterestingData", checked(pointerSize * InterestingDataCount));
-            typeBuilder.AddField("CompactReasons", checked(pointerSize * CompactReasonsCount));
-            typeBuilder.AddField("ExpandMechanisms", checked(pointerSize * ExpandMechanismsCount));
-            typeBuilder.AddField("InterestingMechanismBits", checked(pointerSize * InterestingMechanismBitsCount));
-            typeBuilder.AddPointerField("InternalRootArray");
-            typeBuilder.AddNUIntField("InternalRootArrayIndex");
-            typeBuilder.AddInt32Field("HeapAnalyzeSuccess");
-        });
-
-        baseTypes[GCHeapTypeName] = gcHeapType;
-
-        return baseTypes;
-    }
-
-    private static void WriteGenerationData(
-        MockTarget.Architecture architecture,
-        Span<byte> generationSpan,
-        Dictionary<string, MockDataDescriptorType> types,
-        MockGCHeapBuilder.GenerationInput generation)
-    {
-        MockDataDescriptorType allocContextType = types[GCAllocContextTypeName];
-        FieldWriter generationWriter = new(generationSpan, architecture, types[GenerationTypeName]);
-        FieldWriter allocContextWriter = new(generationWriter.GetFieldSlice("AllocationContext"), architecture, allocContextType);
-
-        allocContextWriter.WritePointerField("Pointer", generation.AllocContextPointer);
-        allocContextWriter.WritePointerField("Limit", generation.AllocContextLimit);
-        generationWriter.WritePointerField("StartSegment", generation.StartSegment);
-        generationWriter.WritePointerField("AllocationStart", generation.AllocationStart);
-    }
-
-    private static ulong AllocateGenerationTable(
-        MockTarget.Architecture architecture,
-        MockMemorySpace.BumpAllocator allocator,
-        Dictionary<string, MockDataDescriptorType> types,
-        MockGCHeapBuilder.GenerationInput[] generations)
-    {
-        uint generationSize = types[GenerationTypeName].Size ?? throw new InvalidOperationException("Generation size is required.");
-        MockMemorySpace.HeapFragment generationTable = allocator.AllocateFragment(generationSize * (uint)generations.Length);
-        WriteGenerationTable(architecture, generationTable.Data, types, generations);
-
-        return generationTable.Address;
-    }
-
-    private static void WriteGenerationTable(
-        MockTarget.Architecture architecture,
-        Span<byte> generationTableSpan,
-        Dictionary<string, MockDataDescriptorType> types,
-        MockGCHeapBuilder.GenerationInput[] generations)
-    {
-        uint generationSize = types[GenerationTypeName].Size ?? throw new InvalidOperationException("Generation size is required.");
-        for (int i = 0; i < generations.Length; i++)
-        {
-            WriteGenerationData(
-                architecture,
-                generationTableSpan.Slice((int)(i * generationSize), (int)generationSize),
-                types,
-                generations[i]);
-        }
-    }
-
-    private static ulong AllocateCFinalize(
-        MockTarget.Architecture architecture,
-        MockMemorySpace.BumpAllocator allocator,
-        MockDataDescriptorType cFinalizeType,
-        ulong[] fillPointers)
-    {
-        int fillPointerOffset = cFinalizeType.GetFieldOffset("FillPointers");
-        ulong cFinalizeSize = (ulong)fillPointerOffset + (ulong)(architecture.PointerSize * fillPointers.Length);
-        MockMemorySpace.HeapFragment cFinalize = allocator.AllocateFragment(cFinalizeSize);
-        SpanWriter writer = new(architecture, cFinalize.Data.AsSpan(fillPointerOffset));
-        foreach (ulong fillPointer in fillPointers)
-        {
-            writer.WritePointer(fillPointer);
-        }
-        return cFinalize.Address;
-    }
-
-    private static ulong AllocateGCHeap(
-        MockTarget.Architecture architecture,
-        MockMemorySpace.BumpAllocator allocator,
-        Dictionary<string, MockDataDescriptorType> types,
-        MockGCHeapBuilder.GenerationInput[] generations,
-        ulong cFinalizeAddress)
-    {
-        MockDataDescriptorType gcHeapType = types[GCHeapTypeName];
-        MockMemorySpace.HeapFragment gcHeap = allocator.AllocateFragment(gcHeapType.Size ?? 0);
-        FieldWriter gcHeapWriter = new(gcHeap.Data.AsSpan(), architecture, gcHeapType);
-        gcHeapWriter.WritePointerField("FinalizeQueue", cFinalizeAddress);
-        WriteGenerationTable(
-            architecture,
-            gcHeapWriter.GetFieldSlice("GenerationTable"),
-            types,
-            generations);
-        return gcHeap.Address;
-    }
-
-    private static void BuildWksHeap(MockProcessBuilder processBuilder, MockGCHeapBuilder config)
-    {
-        MockMemorySpace.Builder memoryBuilder = processBuilder.MemoryBuilder;
-        MockTarget.Architecture architecture = processBuilder.Architecture;
-        MockMemorySpace.BumpAllocator allocator = memoryBuilder.DefaultAllocator;
-        MockGCHeapBuilder.GenerationInput[] generations = config.Generations;
-        uint generationCount = (uint)generations.Length;
-        ulong[] fillPointers = config.FillPointers;
-        uint fillPointerCount = (uint)fillPointers.Length;
+        MockGCHeapBuilder gcHeapBuilder = new(processBuilder.MemoryBuilder);
+        configure(gcHeapBuilder);
+        heapAddress = 0;
+        ulong builtHeapAddress = 0;
 
         processBuilder.AddCoreClr(module =>
         {
             module.AddDataDescriptor(descriptorBuilder =>
             {
-                Dictionary<string, MockDataDescriptorType> types = GetBaseTypes(descriptorBuilder);
-                ulong generationTableAddress = AllocateGenerationTable(architecture, allocator, types, generations);
-                ulong cFinalizeAddress = AllocateCFinalize(architecture, allocator, types[CFinalizeTypeName], fillPointers);
-                ulong oomHistoryAddress = allocator.AllocateFragment(types[OomHistoryTypeName].Size ?? 0).Address;
+                MockCFinalize cFinalize = gcHeapBuilder.AllocateCFinalize();
+                MockGCHeap gcHeap = gcHeapBuilder.AllocateGCHeap(cFinalize.Address);
+                builtHeapAddress = gcHeap.Address;
+                descriptorBuilder.AddType(gcHeapBuilder.GCAllocContextLayout);
+                descriptorBuilder.AddType(gcHeapBuilder.GenerationLayout);
+                descriptorBuilder.AddType(gcHeapBuilder.CFinalizeLayout);
+                descriptorBuilder.AddType(gcHeapBuilder.OomHistoryLayout);
+                descriptorBuilder.AddType(gcHeapBuilder.GCHeapLayout);
 
                 descriptorBuilder
                     .AddContract(GCContractName, 1)
-                    .AddGlobalValue("TotalGenerationCount", generationCount)
-                    .AddGlobalValue("CFinalizeFillPointersLength", fillPointerCount)
+                    .AddGlobalValue("TotalGenerationCount", gcHeapBuilder.TotalGenerationCount)
+                    .AddGlobalValue("CFinalizeFillPointersLength", gcHeapBuilder.FillPointerCount)
                     .AddGlobalValue("InterestingDataLength", 0)
                     .AddGlobalValue("CompactReasonsLength", 0)
                     .AddGlobalValue("ExpandMechanismsLength", 0)
@@ -257,72 +348,18 @@ public static class MockGCHeapBuilderExtensions
                     .AddGlobalValue("BlockInvalid", 1)
                     .AddGlobalValue("DebugDestroyedHandleValue", 0)
                     .AddGlobalValue("HandleMaxInternalTypes", 12)
-                    .AddGlobalValue("GCHeapMarkArray", allocator.AllocatePointer(0))
-                    .AddGlobalValue("GCHeapNextSweepObj", allocator.AllocatePointer(0))
-                    .AddGlobalValue("GCHeapBackgroundMinSavedAddr", allocator.AllocatePointer(0))
-                    .AddGlobalValue("GCHeapBackgroundMaxSavedAddr", allocator.AllocatePointer(0))
-                    .AddGlobalValue("GCHeapAllocAllocated", allocator.AllocatePointer(0))
-                    .AddGlobalValue("GCHeapEphemeralHeapSegment", allocator.AllocatePointer(0))
-                    .AddGlobalValue("GCHeapCardTable", allocator.AllocatePointer(0))
-                    .AddGlobalValue("GCHeapFinalizeQueue", allocator.AllocatePointer(cFinalizeAddress))
-                    .AddGlobalValue("GCHeapGenerationTable", generationTableAddress)
-                    .AddGlobalValue("GCHeapOomData", oomHistoryAddress)
-                    .AddGlobalValue("GCHeapInternalRootArray", allocator.AllocatePointer(0))
-                    .AddGlobalValue("GCHeapInternalRootArrayIndex", allocator.AllocatePointer(0))
-                    .AddGlobalValue("GCHeapHeapAnalyzeSuccess", allocator.AllocateInt32(0))
-                    .AddGlobalValue("GCHeapInterestingData", allocator.AllocatePointer(0))
-                    .AddGlobalValue("GCHeapCompactReasons", allocator.AllocatePointer(0))
-                    .AddGlobalValue("GCHeapExpandMechanisms", allocator.AllocatePointer(0))
-                    .AddGlobalValue("GCHeapInterestingMechanismBits", allocator.AllocatePointer(0))
-                    .AddGlobalValue("GCLowestAddress", allocator.AllocatePointer(0x1000))
-                    .AddGlobalValue("GCHighestAddress", allocator.AllocatePointer(0xFFFF_0000))
-                    .AddGlobalValue("StructureInvalidCount", allocator.AllocateInt32(0))
-                    .AddGlobalValue("MaxGeneration", allocator.AllocateUInt32(generationCount - 1))
-                    .AddGlobalString("GCIdentifiers", "workstation,segments");
-            });
-        });
-    }
-
-    private static ulong BuildSvrHeap(MockProcessBuilder processBuilder, MockGCHeapBuilder config)
-    {
-        MockMemorySpace.Builder memoryBuilder = processBuilder.MemoryBuilder;
-        MockTarget.Architecture architecture = processBuilder.Architecture;
-        MockMemorySpace.BumpAllocator allocator = memoryBuilder.DefaultAllocator;
-        ulong heapAddress = 0;
-        MockGCHeapBuilder.GenerationInput[] generations = config.Generations;
-        uint generationCount = (uint)generations.Length;
-        ulong[] fillPointers = config.FillPointers;
-        uint fillPointerCount = (uint)fillPointers.Length;
-
-        processBuilder.AddCoreClr(module =>
-        {
-            module.AddDataDescriptor(descriptorBuilder =>
-            {
-                Dictionary<string, MockDataDescriptorType> types = GetSvrTypes(descriptorBuilder, architecture, generationCount);
-                ulong cFinalizeAddress = AllocateCFinalize(architecture, allocator, types[CFinalizeTypeName], fillPointers);
-                heapAddress = AllocateGCHeap(architecture, allocator, types, generations, cFinalizeAddress);
-                descriptorBuilder
-                    .AddContract(GCContractName, 1)
-                    .AddGlobalValue("TotalGenerationCount", generationCount)
-                    .AddGlobalValue("CFinalizeFillPointersLength", fillPointerCount)
-                    .AddGlobalValue("InterestingDataLength", 0)
-                    .AddGlobalValue("CompactReasonsLength", 0)
-                    .AddGlobalValue("ExpandMechanismsLength", 0)
-                    .AddGlobalValue("InterestingMechanismBitsLength", 0)
-                    .AddGlobalValue("HandlesPerBlock", 32)
-                    .AddGlobalValue("BlockInvalid", 1)
-                    .AddGlobalValue("DebugDestroyedHandleValue", 0)
-                    .AddGlobalValue("HandleMaxInternalTypes", 12)
-                    .AddGlobalValue("NumHeaps", allocator.AllocateUInt32(1))
-                    .AddGlobalValue("Heaps", allocator.AllocatePointer(allocator.AllocatePointer(heapAddress)))
-                    .AddGlobalValue("GCLowestAddress", allocator.AllocatePointer(0x1000))
-                    .AddGlobalValue("GCHighestAddress", allocator.AllocatePointer(0x7FFF_0000))
-                    .AddGlobalValue("StructureInvalidCount", allocator.AllocateInt32(0))
-                    .AddGlobalValue("MaxGeneration", allocator.AllocateUInt32(generationCount - 1))
+                    .AddGlobalValue("NumHeaps", processBuilder.MemoryBuilder.DefaultAllocator.AllocateUInt32(1))
+                    .AddGlobalValue("Heaps", processBuilder.MemoryBuilder.DefaultAllocator.AllocatePointer(processBuilder.MemoryBuilder.DefaultAllocator.AllocatePointer(gcHeap.Address)))
+                    .AddGlobalValue("GCLowestAddress", processBuilder.MemoryBuilder.DefaultAllocator.AllocatePointer(0x1000))
+                    .AddGlobalValue("GCHighestAddress", processBuilder.MemoryBuilder.DefaultAllocator.AllocatePointer(0x7FFF_0000))
+                    .AddGlobalValue("StructureInvalidCount", processBuilder.MemoryBuilder.DefaultAllocator.AllocateInt32(0))
+                    .AddGlobalValue("MaxGeneration", processBuilder.MemoryBuilder.DefaultAllocator.AllocateUInt32(gcHeapBuilder.TotalGenerationCount - 1))
                     .AddGlobalString("GCIdentifiers", "server,segments");
             });
         });
 
-        return heapAddress;
+        heapAddress = builtHeapAddress;
+
+        return processBuilder;
     }
 }

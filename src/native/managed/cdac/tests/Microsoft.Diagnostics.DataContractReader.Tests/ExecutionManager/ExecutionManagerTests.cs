@@ -183,10 +183,10 @@ public class ExecutionManagerTests
         uint runtimeFunction = 0x100;
 
         TargetPointer r2rInfo = emBuilder.AddReadyToRunInfo([runtimeFunction], []);
-        MockDescriptors.HashMap hashMapBuilder = new(emBuilder.Builder);
-        hashMapBuilder.PopulatePtrMap(
-            r2rInfo + (uint)emBuilder.Types[DataType.ReadyToRunInfo].Fields[nameof(Data.ReadyToRunInfo.EntryPointToMethodDescMap)].Offset,
-            []);
+        MockHashMapBuilder hashMapBuilder = new(emBuilder.Builder, emBuilder.Allocator);
+        MockHashMap map = hashMapBuilder.GetHashMap(
+            r2rInfo + (uint)emBuilder.Types[DataType.ReadyToRunInfo].Fields[nameof(Data.ReadyToRunInfo.EntryPointToMethodDescMap)].Offset);
+        hashMapBuilder.PopulatePtrMap(map, []);
 
         TargetPointer r2rModule = emBuilder.AddReadyToRunModule(r2rInfo);
         TargetPointer rangeSectionAddress = emBuilder.AddReadyToRunRangeSection(jittedCode, jitManagerAddress, r2rModule);
@@ -218,10 +218,10 @@ public class ExecutionManagerTests
         uint expectedRuntimeFunction = 0x100;
 
         TargetPointer r2rInfo = emBuilder.AddReadyToRunInfo([expectedRuntimeFunction], []);
-        MockDescriptors.HashMap hashMapBuilder = new(emBuilder.Builder);
-        hashMapBuilder.PopulatePtrMap(
-            r2rInfo + (uint)emBuilder.Types[DataType.ReadyToRunInfo].Fields[nameof(Data.ReadyToRunInfo.EntryPointToMethodDescMap)].Offset,
-            [(jittedCode.RangeStart + expectedRuntimeFunction, expectedMethodDescAddress)]);
+        MockHashMapBuilder hashMapBuilder = new(emBuilder.Builder, emBuilder.Allocator);
+        MockHashMap map = hashMapBuilder.GetHashMap(
+            r2rInfo + (uint)emBuilder.Types[DataType.ReadyToRunInfo].Fields[nameof(Data.ReadyToRunInfo.EntryPointToMethodDescMap)].Offset);
+        hashMapBuilder.PopulatePtrMap(map, [(jittedCode.RangeStart + expectedRuntimeFunction, expectedMethodDescAddress)]);
 
         TargetPointer r2rModule = emBuilder.AddReadyToRunModule(r2rInfo);
         TargetPointer rangeSectionAddress = emBuilder.AddReadyToRunRangeSection(jittedCode, jitManagerAddress, r2rModule);
@@ -264,9 +264,11 @@ public class ExecutionManagerTests
         uint[] runtimeFunctions = [0x100, 0xc00];
 
         TargetPointer r2rInfo = emBuilder.AddReadyToRunInfo(runtimeFunctions, []);
-        MockDescriptors.HashMap hashMapBuilder = new(emBuilder.Builder);
+        MockHashMapBuilder hashMapBuilder = new(emBuilder.Builder, emBuilder.Allocator);
+        MockHashMap map = hashMapBuilder.GetHashMap(
+            r2rInfo + (uint)emBuilder.Types[DataType.ReadyToRunInfo].Fields[nameof(Data.ReadyToRunInfo.EntryPointToMethodDescMap)].Offset);
         hashMapBuilder.PopulatePtrMap(
-            r2rInfo + (uint)emBuilder.Types[DataType.ReadyToRunInfo].Fields[nameof(Data.ReadyToRunInfo.EntryPointToMethodDescMap)].Offset,
+            map,
             [
                 (jittedCode.RangeStart + runtimeFunctions[0], methodDescAddresses[0]),
                 (jittedCode.RangeStart + runtimeFunctions[1], methodDescAddresses[1]),
@@ -329,9 +331,11 @@ public class ExecutionManagerTests
         uint[] hotColdMap = [3, 0, 4, 1];
 
         TargetPointer r2rInfo = emBuilder.AddReadyToRunInfo(runtimeFunctions, hotColdMap);
-        MockDescriptors.HashMap hashMapBuilder = new(emBuilder.Builder);
+        MockHashMapBuilder hashMapBuilder = new(emBuilder.Builder, emBuilder.Allocator);
+        MockHashMap map = hashMapBuilder.GetHashMap(
+            r2rInfo + (uint)emBuilder.Types[DataType.ReadyToRunInfo].Fields[nameof(Data.ReadyToRunInfo.EntryPointToMethodDescMap)].Offset);
         hashMapBuilder.PopulatePtrMap(
-            r2rInfo + (uint)emBuilder.Types[DataType.ReadyToRunInfo].Fields[nameof(Data.ReadyToRunInfo.EntryPointToMethodDescMap)].Offset,
+            map,
             [
                 (jittedCode.RangeStart + runtimeFunctions[hotColdMap[1]], methodDescAddresses[0]),
                 (jittedCode.RangeStart + runtimeFunctions[hotColdMap[3]], methodDescAddresses[1]),
@@ -377,10 +381,10 @@ public class ExecutionManagerTests
         uint runtimeFunction = 0x100;
 
         TargetPointer r2rInfo = emBuilder.AddReadyToRunInfo([runtimeFunction], []);
-        MockDescriptors.HashMap hashMapBuilder = new(emBuilder.Builder);
-        hashMapBuilder.PopulatePtrMap(
-            r2rInfo + (uint)emBuilder.Types[DataType.ReadyToRunInfo].Fields[nameof(Data.ReadyToRunInfo.EntryPointToMethodDescMap)].Offset,
-            [(jittedCode.RangeStart + runtimeFunction, new TargetPointer(0x0101_aaa0))]);
+        MockHashMapBuilder hashMapBuilder = new(emBuilder.Builder, emBuilder.Allocator);
+        MockHashMap map = hashMapBuilder.GetHashMap(
+            r2rInfo + (uint)emBuilder.Types[DataType.ReadyToRunInfo].Fields[nameof(Data.ReadyToRunInfo.EntryPointToMethodDescMap)].Offset);
+        hashMapBuilder.PopulatePtrMap(map, [(jittedCode.RangeStart + runtimeFunction, new TargetPointer(0x0101_aaa0))]);
 
         TargetPointer r2rModule = emBuilder.AddReadyToRunModule(r2rInfo);
         TargetPointer rangeSectionAddress = emBuilder.AddReadyToRunRangeSection(jittedCode, jitManagerAddress, r2rModule);

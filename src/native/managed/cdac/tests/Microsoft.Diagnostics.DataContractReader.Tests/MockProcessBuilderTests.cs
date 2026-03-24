@@ -191,6 +191,23 @@ public sealed class MockProcessBuilderTests
 
     [Theory]
     [ClassData(typeof(MockTarget.StdArch))]
+    public void AddGCHeapSvr_UsesLayoutDerivedFieldTypeNames(MockTarget.Architecture arch)
+    {
+        MockProcess process = new MockProcessBuilder(arch)
+            .AddGCHeapSvr(static _ => { }, out _)
+            .Build();
+
+        ContractDescriptorTarget target = process.CreateContractDescriptorTarget();
+        Target.TypeInfo generationType = target.GetTypeInfo("Generation");
+        Target.TypeInfo gcHeapType = target.GetTypeInfo("GCHeap");
+
+        Assert.Equal("GCAllocContext", generationType.Fields["AllocationContext"].TypeName);
+        Assert.Equal("Generation", gcHeapType.Fields["GenerationTable"].TypeName);
+        Assert.Equal("OomHistory", gcHeapType.Fields["OomData"].TypeName);
+    }
+
+    [Theory]
+    [ClassData(typeof(MockTarget.StdArch))]
     public void DefaultAllocator_TracksFragmentsButCreateUntrackedAllocatorDoesNot(MockTarget.Architecture arch)
     {
         MockMemorySpace.Builder builder = new(new MockMemoryHelpers(arch));
@@ -246,6 +263,60 @@ public sealed class MockProcessBuilderTests
         Assert.Equal((ulong)0x1234, pointerValue);
         Assert.Equal(-7, int32Value);
         Assert.Equal((uint)42, uint32Value);
+    }
+
+    [Theory]
+    [ClassData(typeof(MockTarget.StdArch))]
+    public void TypedView_InitFromHeapFragment_InitializesLayoutAndSupportsTypedAccess(MockTarget.Architecture arch)
+    {
+        MockMemorySpace.Builder builder = new(new MockMemoryHelpers(arch));
+        MockHashMapBuilder hashMapBuilder = new(builder);
+
+        MockMemorySpace.HeapFragment fragment = builder.DefaultAllocator.AllocateFragment((ulong)hashMapBuilder.HashMapLayout.Size);
+        MockHashMap view = new();
+        view.Init(fragment.Data.AsMemory(), fragment.Address, hashMapBuilder.HashMapLayout);
+        view.Buckets = 0x1234;
+
+        Span<byte> bytes = builder.BorrowAddressRange(fragment.Address, arch.PointerSize);
+        ulong storedValue = arch.Is64Bit
+            ? (arch.IsLittleEndian
+                ? BinaryPrimitives.ReadUInt64LittleEndian(bytes)
+                : BinaryPrimitives.ReadUInt64BigEndian(bytes))
+            : (arch.IsLittleEndian
+                ? BinaryPrimitives.ReadUInt32LittleEndian(bytes)
+                : BinaryPrimitives.ReadUInt32BigEndian(bytes));
+
+        Assert.Equal(fragment.Address, view.Address);
+        Assert.Equal(hashMapBuilder.HashMapLayout, view.Layout);
+        Assert.Equal(hashMapBuilder.HashMapLayout.Size, view.Memory.Length);
+        Assert.Equal((ulong)0x1234, view.Buckets);
+        Assert.Equal((ulong)0x1234, storedValue);
+    }
+
+    [Theory]
+    [ClassData(typeof(MockTarget.StdArch))]
+    public void TypedView_InitFromAddressAndMemory_InitializesLayoutAndSupportsTypedAccess(MockTarget.Architecture arch)
+    {
+        MockMemorySpace.Builder builder = new(new MockMemoryHelpers(arch));
+        MockHashMapBuilder hashMapBuilder = new(builder);
+
+        MockMemorySpace.HeapFragment fragment = builder.DefaultAllocator.AllocateFragment((ulong)hashMapBuilder.HashMapLayout.Size);
+        MockHashMap view = new();
+        view.Init(fragment.Data.AsMemory(), fragment.Address, hashMapBuilder.HashMapLayout);
+        view.Buckets = 0x5678;
+
+        Span<byte> bytes = builder.BorrowAddressRange(fragment.Address, arch.PointerSize);
+        ulong storedValue = arch.Is64Bit
+            ? (arch.IsLittleEndian
+                ? BinaryPrimitives.ReadUInt64LittleEndian(bytes)
+                : BinaryPrimitives.ReadUInt64BigEndian(bytes))
+            : (arch.IsLittleEndian
+                ? BinaryPrimitives.ReadUInt32LittleEndian(bytes)
+                : BinaryPrimitives.ReadUInt32BigEndian(bytes));
+
+        Assert.Equal(fragment.Address, view.Address);
+        Assert.Equal((ulong)0x5678, view.Buckets);
+        Assert.Equal((ulong)0x5678, storedValue);
     }
 
     [Theory]
@@ -414,19 +485,27 @@ public sealed class MockProcessBuilderTests
 
     [Theory]
     [ClassData(typeof(MockTarget.StdArch))]
-    public void AddLoader_AddsExpectedTypes(MockTarget.Architecture arch)
+    public void AddLoader_AddsExpectedTypesAndGlobals(MockTarget.Architecture arch)
     {
+        MockLoaderBuilder? loaderBuilder = null;
         MockProcess process = new MockProcessBuilder(arch)
-            .AddLoader(static _ => { })
+            .AddLoader(config => loaderBuilder = config)
             .Build();
 
         ContractDescriptorTarget target = process.CreateContractDescriptorTarget();
+        Assert.NotNull(loaderBuilder);
+
+        Assert.Equal(loaderBuilder.SystemDomainGlobalAddress, target.ReadGlobal<ulong>("SystemDomain"));
+
         Target.TypeInfo module = target.GetTypeInfo("Module");
         Target.TypeInfo assembly = target.GetTypeInfo("Assembly");
         Target.TypeInfo probeExtensionResult = target.GetTypeInfo("ProbeExtensionResult");
         Target.TypeInfo peAssembly = target.GetTypeInfo("PEAssembly");
         Target.TypeInfo peImage = target.GetTypeInfo("PEImage");
         Target.TypeInfo peImageLayout = target.GetTypeInfo("PEImageLayout");
+        Target.TypeInfo loaderAllocator = target.GetTypeInfo("LoaderAllocator");
+        Target.TypeInfo virtualCallStubManager = target.GetTypeInfo("VirtualCallStubManager");
+        Target.TypeInfo systemDomain = target.GetTypeInfo("SystemDomain");
 
         Assert.Equal(0, module.Fields["Assembly"].Offset);
         Assert.Equal(arch.PointerSize, module.Fields["PEAssembly"].Offset);
@@ -456,6 +535,232 @@ public sealed class MockProcessBuilderTests
         Assert.Equal(arch.PointerSize, peImageLayout.Fields["Size"].Offset);
         Assert.Equal(arch.PointerSize + sizeof(uint), peImageLayout.Fields["Flags"].Offset);
         Assert.Equal(arch.PointerSize + (2 * sizeof(uint)), peImageLayout.Fields["Format"].Offset);
+
+        Assert.Equal(0, loaderAllocator.Fields["ReferenceCount"].Offset);
+        Assert.Equal(arch.Is64Bit ? 8 : 4, loaderAllocator.Fields["HighFrequencyHeap"].Offset);
+        Assert.Equal(arch.Is64Bit ? 16 : 8, loaderAllocator.Fields["LowFrequencyHeap"].Offset);
+        Assert.Equal(arch.Is64Bit ? 24 : 12, loaderAllocator.Fields["StaticsHeap"].Offset);
+        Assert.Equal(arch.Is64Bit ? 32 : 16, loaderAllocator.Fields["StubHeap"].Offset);
+        Assert.Equal(arch.Is64Bit ? 40 : 20, loaderAllocator.Fields["ExecutableHeap"].Offset);
+        Assert.Equal(arch.Is64Bit ? 48 : 24, loaderAllocator.Fields["FixupPrecodeHeap"].Offset);
+        Assert.Equal(arch.Is64Bit ? 56 : 28, loaderAllocator.Fields["NewStubPrecodeHeap"].Offset);
+        Assert.Equal(arch.Is64Bit ? 64 : 32, loaderAllocator.Fields["VirtualCallStubManager"].Offset);
+        Assert.Equal(arch.Is64Bit ? 72 : 36, loaderAllocator.Fields["ObjectHandle"].Offset);
+
+        Assert.Equal(0, virtualCallStubManager.Fields["IndcellHeap"].Offset);
+        Assert.Equal(arch.PointerSize, virtualCallStubManager.Fields["CacheEntryHeap"].Offset);
+
+        Assert.Equal(0, systemDomain.Fields["GlobalLoaderAllocator"].Offset);
+        Assert.Equal("LoaderAllocator", systemDomain.Fields["GlobalLoaderAllocator"].TypeName);
+        Assert.Equal((int)loaderAllocator.Size!.Value, systemDomain.Fields["SystemAssembly"].Offset);
+    }
+
+    [Theory]
+    [ClassData(typeof(MockTarget.StdArch))]
+    public void AddHashMap_AddsExpectedTypesAndGlobals(MockTarget.Architecture arch)
+    {
+        MockProcess process = new MockProcessBuilder(arch)
+            .AddHashMap(static _ => { })
+            .Build();
+
+        ContractDescriptorTarget target = process.CreateContractDescriptorTarget();
+        Target.TypeInfo hashMap = target.GetTypeInfo("HashMap");
+        Target.TypeInfo bucket = target.GetTypeInfo("Bucket");
+
+        Assert.Equal((uint)4, target.ReadGlobal<uint>("HashMapSlotsPerBucket"));
+        Assert.Equal(arch.Is64Bit ? unchecked((ulong)long.MaxValue) : unchecked((ulong)int.MaxValue), target.ReadGlobal<ulong>("HashMapValueMask"));
+
+        Assert.Equal(0, hashMap.Fields["Buckets"].Offset);
+        Assert.Equal((uint)arch.PointerSize, hashMap.Size);
+
+        Assert.Equal(0, bucket.Fields["Keys"].Offset);
+        Assert.Equal(4 * arch.PointerSize, bucket.Fields["Values"].Offset);
+        Assert.Equal((uint)(8 * arch.PointerSize), bucket.Size);
+    }
+
+    [Theory]
+    [ClassData(typeof(MockTarget.StdArch))]
+    public void HashMapBuilder_LayoutsExposeExpectedShapes(MockTarget.Architecture arch)
+    {
+        MockHashMapBuilder builder = new(new MockMemorySpace.Builder(new MockMemoryHelpers(arch)));
+
+        Assert.Equal("HashMap", builder.HashMapLayout.Name);
+        Assert.Equal(arch.PointerSize, builder.HashMapLayout.Size);
+        Assert.Equal(0, builder.HashMapLayout.GetField("Buckets").Offset);
+        Assert.Equal(arch.PointerSize, builder.HashMapLayout.GetField("Buckets").Size);
+
+        Assert.Equal("Bucket", builder.BucketLayout.Name);
+        Assert.Equal(8 * arch.PointerSize, builder.BucketLayout.Size);
+        Assert.Equal(0, builder.BucketLayout.GetField("Keys").Offset);
+        Assert.Equal(4 * arch.PointerSize, builder.BucketLayout.GetField("Keys").Size);
+        Assert.Equal(4 * arch.PointerSize, builder.BucketLayout.GetField("Values").Offset);
+        Assert.Equal(4 * arch.PointerSize, builder.BucketLayout.GetField("Values").Size);
+    }
+
+    [Theory]
+    [ClassData(typeof(MockTarget.StdArch))]
+    public void HashMapBuilder_CreateHashMap_ReturnsTypedView(MockTarget.Architecture arch)
+    {
+        MockMemorySpace.Builder memoryBuilder = new(new MockMemoryHelpers(arch));
+        MockHashMapBuilder builder = new(memoryBuilder);
+
+        MockHashMap fragment = builder.CreateHashMap();
+        MockHashMapBucketArray buckets = builder.CreateBucketArray([(0x100, 0x10)]);
+        fragment.Buckets = buckets.Address;
+        bool foundEntry = false;
+        for (int i = 1; i < buckets.ElementCount; i++)
+        {
+            MockHashMapBucket bucket = buckets.GetElement(i);
+            if (bucket.GetKey(0) == 0x100 && bucket.GetValue(0) == 0x10)
+            {
+                foundEntry = true;
+                break;
+            }
+        }
+
+        Assert.Equal(builder.HashMapLayout, fragment.Layout);
+        Assert.Equal(buckets.Address, fragment.Buckets);
+        Assert.Equal(builder.BucketLayout, buckets.ElementLayout);
+        Assert.Equal(6, buckets.ElementCount);
+        Assert.Equal((uint)5, buckets.BucketCount);
+        Assert.True(foundEntry);
+    }
+
+    [Theory]
+    [ClassData(typeof(MockTarget.StdArch))]
+    public void Layout_ArrayHelpers_CreateTypedArrayViews(MockTarget.Architecture arch)
+    {
+        MockMemorySpace.Builder memoryBuilder = new(new MockMemoryHelpers(arch));
+        MockHashMapBuilder builder = new(memoryBuilder);
+        MockMemorySpace.HeapFragment fragment = memoryBuilder.DefaultAllocator.AllocateFragment((ulong)(builder.BucketLayout.Size * 2));
+
+        TypedArrayView<MockHashMapBucket> genericArray = builder.BucketLayout.CreateArray(fragment);
+        MockHashMapBucketArray customArray = builder.BucketLayout.CreateCustomArray<MockHashMapBucketArray>(fragment);
+
+        genericArray.GetElement(1).SetKey(0, 0x1234);
+        customArray.GetElement(1).SetValue(0, 0x5678);
+
+        Assert.Equal(2, genericArray.ElementCount);
+        Assert.Equal(2, customArray.ElementCount);
+        Assert.Equal(builder.BucketLayout, genericArray.ElementLayout);
+        Assert.Equal(builder.BucketLayout, customArray.ElementLayout);
+        Assert.Equal((ulong)0x1234, customArray.GetElement(1).GetKey(0));
+        Assert.Equal((ulong)0x5678, genericArray.GetElement(1).GetValue(0));
+    }
+
+    [Theory]
+    [ClassData(typeof(MockTarget.StdArch))]
+    public void Layout_ArrayHelpers_AllocateTypedArrayViews(MockTarget.Architecture arch)
+    {
+        MockMemorySpace.Builder memoryBuilder = new(new MockMemoryHelpers(arch));
+        MockHashMapBuilder builder = new(memoryBuilder);
+
+        TypedArrayView<MockHashMapBucket> genericArray = builder.BucketLayout.AllocateArray(memoryBuilder.DefaultAllocator, 3);
+        MockHashMapBucketArray customArray = builder.BucketLayout.AllocateCustomArray<MockHashMapBucketArray>(memoryBuilder.DefaultAllocator, 2);
+
+        genericArray.GetElement(2).SetKey(0, 0xABCD);
+        customArray.GetElement(1).SetValue(0, 0xDCBA);
+
+        Assert.Equal(3, genericArray.ElementCount);
+        Assert.Equal(2, customArray.ElementCount);
+        Assert.Equal((ulong)0xABCD, genericArray.GetElement(2).GetKey(0));
+        Assert.Equal((ulong)0xDCBA, customArray.GetElement(1).GetValue(0));
+    }
+
+    [Theory]
+    [ClassData(typeof(MockTarget.StdArch))]
+    public void SequentialLayoutBuilder_BuildsExpectedLayout(MockTarget.Architecture arch)
+    {
+        Layout childLayout = new("ChildLayout", arch, 12, []);
+        Layout layout = new SequentialLayoutBuilder("ParentLayout", arch)
+            .AddInt32Field("IntField")
+            .AddPointerField("PointerField")
+            .AddField("ChildField", childLayout.Size, childLayout)
+            .Build();
+
+        Assert.Equal("ParentLayout", layout.Name);
+        Assert.Equal(arch, layout.Architecture);
+        Assert.Equal(arch.Is64Bit ? 28 : 20, layout.Size);
+        Assert.Collection(
+            layout.Fields,
+            field =>
+            {
+                Assert.Equal("IntField", field.Name);
+                Assert.Equal(0, field.Offset);
+                Assert.Null(field.Type);
+            },
+            field =>
+            {
+                Assert.Equal("PointerField", field.Name);
+                Assert.Equal(arch.Is64Bit ? 8 : 4, field.Offset);
+                Assert.Null(field.Type);
+            },
+            field =>
+            {
+                Assert.Equal("ChildField", field.Name);
+                Assert.Equal(arch.Is64Bit ? 16 : 8, field.Offset);
+                Assert.Equal(childLayout, field.Type);
+            });
+    }
+
+    [Theory]
+    [ClassData(typeof(MockTarget.StdArch))]
+    public void AddType_LayoutOverloadUsesLayoutNameSizeAndFieldTypes(MockTarget.Architecture arch)
+    {
+        Layout childLayout = new("ChildLayout", arch, 8, []);
+        Layout parentLayout = new("ParentLayout", arch, arch.Is64Bit ? 24 : 12,
+        [
+            new LayoutField("Child", 0, childLayout.Size, childLayout),
+            new LayoutField("Value", arch.PointerSize, arch.PointerSize),
+        ]);
+
+        MockProcess process = new MockProcessBuilder(arch)
+            .AddCoreClr(module =>
+            {
+                module.AddDataDescriptor(descriptor =>
+                {
+                    descriptor.AddType(childLayout);
+                    descriptor.AddType(parentLayout);
+                });
+            })
+            .Build();
+
+        ContractDescriptorTarget target = process.CreateContractDescriptorTarget();
+        Target.TypeInfo parentType = target.GetTypeInfo("ParentLayout");
+
+        Assert.Equal((uint)parentLayout.Size, parentType.Size);
+        Assert.Equal(0, parentType.Fields["Child"].Offset);
+        Assert.Equal("ChildLayout", parentType.Fields["Child"].TypeName);
+        Assert.Equal(arch.PointerSize, parentType.Fields["Value"].Offset);
+        Assert.Null(parentType.Fields["Value"].TypeName);
+    }
+
+    [Theory]
+    [ClassData(typeof(MockTarget.StdArch))]
+    public void AddType_LayoutOverloadAllowsFurtherConfiguration(MockTarget.Architecture arch)
+    {
+        Layout layout = new("ConfigurableLayout", arch, arch.PointerSize, []);
+
+        MockProcess process = new MockProcessBuilder(arch)
+            .AddCoreClr(module =>
+            {
+                module.AddDataDescriptor(descriptor =>
+                {
+                    descriptor.AddType(layout, type =>
+                    {
+                        type.AddField("ExtraField", arch.PointerSize * 2, "OtherLayout");
+                        type.Size = checked((uint)(arch.PointerSize * 3));
+                    });
+                });
+            })
+            .Build();
+
+        ContractDescriptorTarget target = process.CreateContractDescriptorTarget();
+        Target.TypeInfo typeInfo = target.GetTypeInfo("ConfigurableLayout");
+
+        Assert.Equal((uint)(arch.PointerSize * 3), typeInfo.Size);
+        Assert.Equal(arch.PointerSize * 2, typeInfo.Fields["ExtraField"].Offset);
+        Assert.Equal("OtherLayout", typeInfo.Fields["ExtraField"].TypeName);
     }
 
 }

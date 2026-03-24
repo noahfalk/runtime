@@ -21,10 +21,10 @@ namespace Microsoft.Diagnostics.Internal.RuntimeMemoryMocks;
         private const ulong DefaultAllocatorStart = 0x0100_0000;
         private const ulong DefaultAllocatorEnd = 0x2000_0000;
 
-        public sealed class HeapFragment
+        public class HeapFragment
         {
             public ulong Address;
-            public required byte[] Data;
+            public byte[] Data = null!;
             public string? Name;
     }
 
