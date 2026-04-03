@@ -56,31 +56,31 @@ internal sealed class MockLoaderModule : TypedView
             .AddPointerField(DynamicILBlobTableFieldName)
             .Build<MockLoaderModule>();
 
-    public TargetPointer Assembly
+    public ulong Assembly
     {
         get => ReadPointerField(AssemblyFieldName);
         set => WritePointerField(AssemblyFieldName, value);
     }
 
-    public TargetPointer SimpleName
+    public ulong SimpleName
     {
         get => ReadPointerField(SimpleNameFieldName);
         set => WritePointerField(SimpleNameFieldName, value);
     }
 
-    public TargetPointer Path
+    public ulong Path
     {
         get => ReadPointerField(PathFieldName);
         set => WritePointerField(PathFieldName, value);
     }
 
-    public TargetPointer FileName
+    public ulong FileName
     {
         get => ReadPointerField(FileNameFieldName);
         set => WritePointerField(FileNameFieldName, value);
     }
 
-    public TargetPointer ReadyToRunInfo
+    public ulong ReadyToRunInfo
     {
         get => ReadPointerField(ReadyToRunInfoFieldName);
         set => WritePointerField(ReadyToRunInfoFieldName, value);
@@ -106,7 +106,7 @@ internal sealed class MockLoaderAssembly : TypedView
             .AddField(IsLoadedFieldName, sizeof(byte))
             .Build<MockLoaderAssembly>();
 
-    public TargetPointer Module
+    public ulong Module
     {
         get => ReadPointerField(ModuleFieldName);
         set => WritePointerField(ModuleFieldName, value);
@@ -121,7 +121,6 @@ internal sealed class MockLoaderBuilder
     internal MockMemorySpace.Builder Builder { get; }
     internal Layout<MockLoaderModule> ModuleLayout { get; }
     internal Layout<MockLoaderAssembly> AssemblyLayout { get; }
-    internal Dictionary<DataType, Target.TypeInfo> Types { get; }
 
     private readonly MockMemorySpace.BumpAllocator _allocator;
 
@@ -139,11 +138,6 @@ internal sealed class MockLoaderBuilder
 
         ModuleLayout = MockLoaderModule.CreateLayout(builder.TargetTestHelpers.Arch);
         AssemblyLayout = MockLoaderAssembly.CreateLayout(builder.TargetTestHelpers.Arch);
-        Types = new Dictionary<DataType, Target.TypeInfo>
-        {
-            [DataType.Module] = TargetTestHelpers.CreateTypeInfo(ModuleLayout),
-            [DataType.Assembly] = TargetTestHelpers.CreateTypeInfo(AssemblyLayout),
-        };
     }
 
     internal MockLoaderModule AddModule(
@@ -176,7 +170,7 @@ internal sealed class MockLoaderBuilder
         return module;
     }
 
-    private TargetPointer AddNullTerminatedUtf8(ReadOnlySpan<byte> bytes, string name)
+    private ulong AddNullTerminatedUtf8(ReadOnlySpan<byte> bytes, string name)
     {
         MockMemorySpace.HeapFragment fragment = AllocateAndAdd((ulong)bytes.Length + 1, name);
         bytes.CopyTo(fragment.Data);
@@ -184,7 +178,7 @@ internal sealed class MockLoaderBuilder
         return fragment.Address;
     }
 
-    private TargetPointer AddUtf16String(string value, string name)
+    private ulong AddUtf16String(string value, string name)
     {
         TargetTestHelpers helpers = Builder.TargetTestHelpers;
         Encoding encoding = helpers.Arch.IsLittleEndian ? Encoding.Unicode : Encoding.BigEndianUnicode;

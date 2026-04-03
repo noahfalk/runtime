@@ -197,7 +197,17 @@ internal sealed class SequentialLayoutBuilder
     }
 
     private int GetAlignment(int size)
-        => Math.Min(size, _architecture.Is64Bit ? sizeof(ulong) : sizeof(uint));
+    {
+        int maxAlignment = _architecture.Is64Bit ? sizeof(ulong) : sizeof(uint);
+        int alignment = 1;
+
+        while (alignment < maxAlignment && (alignment << 1) <= size)
+        {
+            alignment <<= 1;
+        }
+
+        return alignment;
+    }
 
     private static int AlignUp(int value, int alignment)
     {

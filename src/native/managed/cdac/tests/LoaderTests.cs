@@ -15,6 +15,13 @@ namespace Microsoft.Diagnostics.DataContractReader.Tests;
 
 public unsafe class LoaderTests
 {
+    internal static Dictionary<DataType, Target.TypeInfo> CreateContractTypes(MockLoaderBuilder loader)
+        => new()
+        {
+            [DataType.Module] = TargetTestHelpers.CreateTypeInfo(loader.ModuleLayout),
+            [DataType.Assembly] = TargetTestHelpers.CreateTypeInfo(loader.AssemblyLayout),
+        };
+
     private static ILoader CreateLoaderContract(MockTarget.Architecture arch, Action<MockLoaderBuilder> configure)
     {
         TargetTestHelpers helpers = new(arch);
@@ -23,7 +30,7 @@ public unsafe class LoaderTests
 
         configure(loader);
 
-        var target = new TestPlaceholderTarget(arch, builder.GetMemoryContext().ReadFromTarget, loader.Types);
+        var target = new TestPlaceholderTarget(arch, builder.GetMemoryContext().ReadFromTarget, CreateContractTypes(loader));
         target.SetContracts(Mock.Of<ContractRegistry>(
             c => c.Loader == ((IContractFactory<ILoader>)new LoaderFactory()).CreateContract(target, 1)));
         return target.Contracts.Loader;
@@ -143,7 +150,7 @@ public unsafe class LoaderTests
         TargetTestHelpers helpers = new(arch);
         MockMemorySpace.Builder builder = new(helpers);
         MockLoaderBuilder loader = new(builder);
-        var types = new Dictionary<DataType, Target.TypeInfo>(loader.Types);
+        var types = new Dictionary<DataType, Target.TypeInfo>(CreateContractTypes(loader));
 
         // Register LoaderAllocator and VirtualCallStubManager type infos so that
         // GetCanonicalHeapNameEntries() can determine which heap names exist.

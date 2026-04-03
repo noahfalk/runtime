@@ -32,7 +32,7 @@ public class MethodDescTests
             [DataType.CLRToCOMCallMethodDesc] = new Target.TypeInfo { Size = methodDescBuilder.CLRToCOMCallMethodDescSize },
         }
         .Concat(MethodTableTests.CreateContractTypes(methodDescBuilder.RTSBuilder))
-        .Concat(methodDescBuilder.LoaderBuilder.Types)
+        .Concat(LoaderTests.CreateContractTypes(methodDescBuilder.LoaderBuilder))
         .ToDictionary();
 
     private static (string Name, ulong Value)[] CreateContractGlobals(MockDescriptors.MockMethodDescriptorsBuilder methodDescBuilder)

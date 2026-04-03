@@ -49,7 +49,7 @@ internal sealed class MockObjectData : TypedView
         return builder.Build<MockObjectData>();
     }
 
-    public TargetPointer MethodTable
+    public ulong MethodTable
     {
         get => ReadPointerField(MethodTableFieldName);
         set => WritePointerField(MethodTableFieldName, value);
@@ -73,7 +73,7 @@ internal sealed class MockStringObjectData : TypedView
         return builder.Build<MockStringObjectData>();
     }
 
-    public TargetPointer MethodTable
+    public ulong MethodTable
     {
         get => ReadPointerField(MethodTableFieldName);
         set => WritePointerField(MethodTableFieldName, value);
@@ -103,7 +103,7 @@ internal sealed class MockArrayObjectData : TypedView
         return builder.Build<MockArrayObjectData>();
     }
 
-    public TargetPointer MethodTable
+    public ulong MethodTable
     {
         get => ReadPointerField(MethodTableFieldName);
         set => WritePointerField(MethodTableFieldName, value);
@@ -127,13 +127,13 @@ internal sealed class MockSyncTableEntry : TypedView
             .AddPointerField(ObjectFieldName)
             .Build<MockSyncTableEntry>();
 
-    public TargetPointer SyncBlock
+    public ulong SyncBlock
     {
         get => ReadPointerField(SyncBlockFieldName);
         set => WritePointerField(SyncBlockFieldName, value);
     }
 
-    public TargetPointer Object
+    public ulong Object
     {
         get => ReadPointerField(ObjectFieldName);
         set => WritePointerField(ObjectFieldName, value);
@@ -165,7 +165,7 @@ internal partial class MockDescriptors
         internal Layout<MockStringObjectData> StringLayout { get; }
         internal Layout<MockArrayObjectData> ArrayLayout { get; }
         internal Layout<MockSyncTableEntry> SyncTableEntryLayout { get; }
-        internal TargetPointer TestStringMethodTableAddress { get; private set; }
+        internal ulong TestStringMethodTableAddress { get; private set; }
         internal Layout<MockSyncBlock> SyncBlockLayout => SyncBlockBuilder.SyncBlockLayout;
         internal Layout<MockInteropSyncBlockInfo> InteropSyncBlockInfoLayout => SyncBlockBuilder.InteropSyncBlockInfoLayout;
 
@@ -195,7 +195,7 @@ internal partial class MockDescriptors
             AddSyncTableEntriesPointer();
         }
 
-        internal TargetPointer AddObject(TargetPointer methodTable, uint prefixSize = 0)
+        internal ulong AddObject(ulong methodTable, uint prefixSize = 0)
         {
             MockMemorySpace.HeapFragment fragment = ManagedObjectAllocator.Allocate((uint)(ObjectLayout.Size + prefixSize), $"Object : MT = '{methodTable}'");
             MockObjectData mockObject = ObjectLayout.Create(fragment.Data.AsMemory((int)prefixSize, ObjectLayout.Size), fragment.Address + prefixSize);
@@ -204,7 +204,7 @@ internal partial class MockDescriptors
             return mockObject.Address;
         }
 
-        internal TargetPointer AddObjectWithSyncBlock(TargetPointer methodTable, uint syncBlockIndex, TargetPointer rcw, TargetPointer ccw, TargetPointer ccf)
+        internal ulong AddObjectWithSyncBlock(ulong methodTable, uint syncBlockIndex, ulong rcw, ulong ccw, ulong ccf)
         {
             const uint IsSyncBlockIndexBits = 0x08000000;
             const uint SyncBlockIndexMask = (1 << 26) - 1;
@@ -213,17 +213,17 @@ internal partial class MockDescriptors
                 throw new ArgumentOutOfRangeException(nameof(syncBlockIndex), "Invalid sync block index");
             }
 
-            TargetPointer address = AddObject(methodTable, prefixSize: (uint)ObjectHeaderLayout.Size);
+            ulong address = AddObject(methodTable, prefixSize: (uint)ObjectHeaderLayout.Size);
 
             uint syncTableValue = IsSyncBlockIndexBits | syncBlockIndex;
-            TargetPointer syncTableValueAddress = address - TestSyncBlockValueToObjectOffset;
+            ulong syncTableValueAddress = address - TestSyncBlockValueToObjectOffset;
             Builder.TargetTestHelpers.Write(Builder.BorrowAddressRange(syncTableValueAddress, sizeof(uint)), syncTableValue);
 
             AddSyncBlock(syncBlockIndex, rcw, ccw, ccf);
             return address;
         }
 
-        internal TargetPointer AddStringObject(string value)
+        internal ulong AddStringObject(string value)
         {
             ArgumentNullException.ThrowIfNull(value);
 
@@ -237,7 +237,7 @@ internal partial class MockDescriptors
             return fragment.Address;
         }
 
-        internal TargetPointer AddArrayObject(Array array)
+        internal ulong AddArrayObject(Array array)
         {
             ArgumentNullException.ThrowIfNull(array);
 
@@ -306,7 +306,7 @@ internal partial class MockDescriptors
             Builder.AddHeapFragment(fragment);
         }
 
-        private void AddSyncBlock(uint index, TargetPointer rcw, TargetPointer ccw, TargetPointer ccf)
+        private void AddSyncBlock(uint index, ulong rcw, ulong ccw, ulong ccf)
         {
             MockSyncBlock syncBlock = SyncBlockBuilder.AddSyncBlock(rcw, ccw, ccf, name: $"Sync Block {index}");
 

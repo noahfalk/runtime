@@ -101,7 +101,7 @@ internal sealed class MockSyncBlockBuilder
 
     private readonly MockMemorySpace.BumpAllocator _allocator;
     private readonly MockSyncBlockCache? _syncBlockCache;
-    private TargetPointer _cleanupListHeadAddress = TargetPointer.Null;
+    private ulong _cleanupListHeadAddress;
 
     internal Layout<MockSyncBlockCache> SyncBlockCacheLayout { get; }
 
@@ -149,9 +149,9 @@ internal sealed class MockSyncBlockBuilder
     }
 
     internal MockSyncBlock AddSyncBlock(
-        TargetPointer rcw,
-        TargetPointer ccw,
-        TargetPointer ccf,
+        ulong rcw,
+        ulong ccw,
+        ulong ccf,
         bool hasInteropInfo = true,
         string name = "SyncBlock")
     {
@@ -179,12 +179,12 @@ internal sealed class MockSyncBlockBuilder
     /// <summary>
     /// Prepends a new SyncBlock to the cleanup list.
     /// </summary>
-    /// <param name="rcw">RCW pointer to store (pass <see cref="TargetPointer.Null"/> for none).</param>
-    /// <param name="ccw">CCW pointer to store (pass <see cref="TargetPointer.Null"/> for none).</param>
-    /// <param name="ccf">CCF pointer to store (pass <see cref="TargetPointer.Null"/> for none).</param>
+    /// <param name="rcw">RCW pointer to store (pass 0 for none).</param>
+    /// <param name="ccw">CCW pointer to store (pass 0 for none).</param>
+    /// <param name="ccf">CCF pointer to store (pass 0 for none).</param>
     /// <param name="hasInteropInfo">When false, the InteropInfo pointer in the SyncBlock is left null.</param>
     internal MockSyncBlock AddSyncBlockToCleanupList(
-        TargetPointer rcw, TargetPointer ccw, TargetPointer ccf, bool hasInteropInfo = true)
+        ulong rcw, ulong ccw, ulong ccf, bool hasInteropInfo = true)
     {
         if (_syncBlockCache is null)
         {
