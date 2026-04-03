@@ -763,20 +763,20 @@ public class CodeVersionsTests
     {
         MockCodeVersions builder = new(arch);
 
-        TargetPointer nativeCodeVersionNode = builder.AddNativeCodeVersionNode();
+        MockNativeCodeVersionNode nativeCodeVersionNode = builder.AddNativeCodeVersionNode();
         builder.FillNativeCodeVersionNode(
             nativeCodeVersionNode,
             methodDesc: new TargetPointer(0x1a0a_0000),
             nativeCode: new TargetCodePointer(0x0a0a_0000),
             next: TargetPointer.Null,
             isActive: true,
-            ilVersionId: new(1),
+            ilVersionId: 1,
             optimizationTier: nativeTier);
 
         var target = CreateTarget(arch, builder);
         var codeVersions = target.Contracts.CodeVersions;
 
-        NativeCodeVersionHandle handle = NativeCodeVersionHandle.CreateExplicit(nativeCodeVersionNode);
+        NativeCodeVersionHandle handle = NativeCodeVersionHandle.CreateExplicit(nativeCodeVersionNode.Address);
         OptimizationTier tier = codeVersions.GetOptimizationTier(handle);
         Assert.Equal(expectedTier, tier);
     }
