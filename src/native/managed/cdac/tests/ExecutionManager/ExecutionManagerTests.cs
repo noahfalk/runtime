@@ -168,7 +168,7 @@ public class ExecutionManagerTests
             });
 
         // test at code range start
-        var eeInfo = em.GetCodeBlockHandle(codeRangeStart + codeRangeSize / 4);
+        var eeInfo = em.GetCodeBlockHandle(codeRangeStart);
         Assert.Null(eeInfo);
 
         // test middle of code range
