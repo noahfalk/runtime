@@ -12,10 +12,11 @@ public unsafe class ThreadTests
 {
     private static TestPlaceholderTarget CreateTarget(
         MockTarget.Architecture arch,
-        Action<MockThreadBuilder> configure)
+        Action<MockThreadBuilder> configure,
+        bool hasProfilingSupport = true)
     {
         TestPlaceholderTarget.Builder targetBuilder = new(arch);
-        MockThreadBuilder threadBuilder = new(targetBuilder.MemoryBuilder);
+        MockThreadBuilder threadBuilder = new(targetBuilder.MemoryBuilder, hasProfilingSupport: hasProfilingSupport);
         configure(threadBuilder);
 
         TestPlaceholderTarget target = targetBuilder
@@ -283,22 +284,20 @@ public unsafe class ThreadTests
     [ClassData(typeof(MockTarget.StdArch))]
     public void GetThreadData_NoProfilerFilterContext(MockTarget.Architecture arch)
     {
-        TargetTestHelpers helpers = new(arch);
-        MockMemorySpace.Builder builder = new(helpers);
-        MockDescriptors.Thread thread = new(builder, hasProfilingSupport: false);
+        const uint id = 1;
+        const ulong osId = 1234;
+        MockThread? thread = null;
 
-        uint id = 1;
-        TargetNUInt osId = new TargetNUInt(1234);
-
-        TargetPointer addr = thread.AddThread(id, osId);
-
-        Target target = CreateTarget(thread);
+        TestPlaceholderTarget target = CreateTarget(
+            arch,
+            threadBuilder => thread = threadBuilder.AddThread(id, osId),
+            hasProfilingSupport: false);
 
         IThread contract = target.Contracts.Thread;
         Assert.NotNull(contract);
 
-        ThreadData data = contract.GetThreadData(addr);
+        ThreadData data = contract.GetThreadData(new TargetPointer(thread!.Address));
         Assert.Equal(id, data.Id);
-        Assert.Equal(osId, data.OSId);
+        Assert.Equal(new TargetNUInt(osId), data.OSId);
     }
 }
