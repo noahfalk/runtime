@@ -74,6 +74,9 @@ Tests run on all four architecture combinations using `[ClassData(typeof(MockTar
 - 64-bit little-endian, 64-bit big-endian
 - 32-bit little-endian, 32-bit big-endian
 
+On 32-bit targets, `ClrDataAddress` values are sign-extended. When writing
+SOSDacImpl-level tests or asserting on address values, prefer addresses below
+`0x8000_0000` or account for the sign extension in the expected value.
 ## Implementing the helper that returns the contract
 
 Helpers should hide target construction and return the contract or legacy
