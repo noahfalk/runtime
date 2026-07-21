@@ -5,6 +5,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
 using Microsoft.Diagnostics.DataContractReader.Legacy;
+using Microsoft.Diagnostics.DataContractReader.TestInfrastructure;
 using Xunit;
 
 namespace Microsoft.Diagnostics.DataContractReader.Tests;
@@ -14,7 +15,10 @@ public unsafe class FunctionTableAccessTests
     [Fact]
     public void QueryInterfaceFromIXCLRDataProcess_ReturnsProcess3()
     {
-        SOSDacImpl impl = new(target: null!, legacyObj: null);
+        MockTarget.Architecture architecture = new() { IsLittleEndian = true, Is64Bit = true };
+        MockMemorySpace.MemoryContext memoryContext = new();
+        TestPlaceholderTarget target = new(architecture, memoryContext.ReadFromTarget);
+        SOSDacImpl impl = new(target, legacyObj: null);
         void* process = ComInterfaceMarshaller<IXCLRDataProcess>.ConvertToUnmanaged(impl);
 
         try
