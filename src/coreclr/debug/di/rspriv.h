@@ -3234,8 +3234,8 @@ public:
 
     void DetachShim();
 
-    // Flush for when the process is running.
-    void FlushProcessRunning();
+    // Flush state after forward execution or an arbitrary target-state change.
+    void FlushProcessState(CorDebugStateChange change);
 
     // Flush all state.
     void FlushAll();
@@ -3626,7 +3626,7 @@ public:
 
     BOOL IsDacInitialized();
 
-    void ForceDacFlush();
+    void ForceDacFlush(CorDebugStateChange change);
 
 
 #ifdef FEATURE_INTEROP_DEBUGGING

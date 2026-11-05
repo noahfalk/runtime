@@ -1684,7 +1684,7 @@ void CordbProcess::InitializeDac()
     }
 
     // Always flush dac.
-    ForceDacFlush();
+    ForceDacFlush(FLUSH_ALL);
 }
 
 //---------------------------------------------------------------------------------------
@@ -2358,7 +2358,7 @@ HRESULT CordbProcess::ProcessStateChanged(CorDebugStateChange eChange)
         switch(eChange)
         {
         case PROCESS_RUNNING:
-            FlushProcessRunning();
+            FlushProcessState(PROCESS_RUNNING);
             break;
 
         case FLUSH_ALL:
@@ -3072,14 +3072,14 @@ HRESULT CordbHeapEnum::Next(ULONG celt, COR_HEAPOBJECT objects[], ULONG *pceltFe
 }
 
 //---------------------------------------------------------------------------------------
-// Flush state for when the process starts running.
+// Flush state after forward execution or an arbitrary target-state change.
 //
 // Notes:
 //   Helper for code:CordbProcess::ProcessStateChanged.
 //   Since ICD Arrowhead does not own the eventing pipeline, it needs the debugger to
 //   notifying it of when the process is running again.  This is like the counterpart
 //   to code:CordbProcess::Filter
-void CordbProcess::FlushProcessRunning()
+void CordbProcess::FlushProcessState(CorDebugStateChange change)
 {
     _ASSERTE(GetProcessLock()->HasLock());
 
@@ -3088,7 +3088,7 @@ void CordbProcess::FlushProcessRunning()
 
     // Safely dispose anything that should be neutered on continue.
     MarkAllThreadsDirty();
-    ForceDacFlush();
+    ForceDacFlush(change);
 }
 
 //---------------------------------------------------------------------------------------
@@ -3124,9 +3124,9 @@ void CordbProcess::FlushAll()
         ThrowHR(CORDBG_E_DETACH_FAILED_OUTSTANDING_TARGET_RESOURCES);
     }
 
-    // FlushAll is a superset of FlushProcessRunning.
+    // FlushAll also discards state that could be retained across forward execution.
     // This will also ensure we clear the DAC cache.
-    FlushProcessRunning();
+    FlushProcessState(FLUSH_ALL);
 
     // If we detach before the CLR is loaded into the debuggee, then we can no-op a lot of work.
     // We sure can't be sending IPC events to the LS before it exists.
@@ -4298,7 +4298,7 @@ HRESULT CordbProcess::ContinueInternal(BOOL fIsOutOfBand)
 
         // Flush will update state, including continue counter and marking
         // frames dirty.
-        this->FlushProcessRunning();
+        this->FlushProcessState(PROCESS_RUNNING);
 
 
         // Tell the RC event thread that something about this process has changed.
@@ -9852,7 +9852,7 @@ HRESULT CordbRCEventThread::SendIPCEvent(CordbProcess* process,
         }
     }
 
-    process->ForceDacFlush();
+    process->ForceDacFlush(PROCESS_RUNNING);
 
     // The hr and hrEvent are 2 very different things.
     // hr tells us whether the event was sent successfully.
@@ -11812,7 +11812,7 @@ void CordbWin32EventThread::Win32EventLoop()
         g_pRSDebuggingInfo->m_MRUprocess = m_pProcess;
 
         // Must flush the dac cache since we were just running.
-        m_pProcess->ForceDacFlush();
+        m_pProcess->ForceDacFlush(PROCESS_RUNNING);
 
 #ifdef OUT_OF_PROCESS_SETTHREADCONTEXT
         bool fOutOfProcessSteppingDuringDetach = false;
@@ -12909,7 +12909,7 @@ void CordbProcess::HandleDebugEventForInteropDebugging(const DEBUG_EVENT * pEven
 
     // If we get a new Win32 Debug event, then we need to flush any cached oop data structures.
     // This includes refreshing DAC and our patch table.
-    ForceDacFlush();
+    ForceDacFlush(PROCESS_RUNNING);
     ClearPatchTable();
 
 #ifdef _DEBUG
@@ -13639,7 +13639,7 @@ HRESULT CordbProcess::ContinueShimless()
             DecStopCount();
         }
         m_waitingForSuppliedEventWhileSynchronized = false;
-        FlushProcessRunning();
+        FlushProcessState(PROCESS_RUNNING);
         m_cordb->ProcessStateChanged();
 #ifdef HOST_WINDOWS
         LogWasmProcessState(

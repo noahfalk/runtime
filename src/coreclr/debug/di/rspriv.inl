@@ -146,7 +146,7 @@ CordbAppDomain *CordbJITILFrame::GetCurrentAppDomain()
 // Called to notify that we must flush DAC
 //-----------------------------------------------------------------------------
 inline
-void CordbProcess::ForceDacFlush()
+void CordbProcess::ForceDacFlush(CorDebugStateChange change)
 {
     // We need to take the process lock here because otherwise we could race with the Arrowhead stackwalking
     // APIs.  The Arrowhead stackwalking APIs check the flush counter and refresh all the state if necessary.
@@ -166,7 +166,7 @@ void CordbProcess::ForceDacFlush()
             HRESULT hr = S_OK;
             EX_TRY
             {
-                m_pDacPrimitives->FlushCache();
+                m_pDacPrimitives->FlushCache(change);
             }
             EX_CATCH_HRESULT(hr);
             SIMPLIFYING_ASSUMPTION_SUCCEEDED(hr);

@@ -530,8 +530,9 @@ DacDbiInterfaceImpl::Release(THIS)
 }
 
 // Flush the DAC cache. This should be called when target memory changes.
-HRESULT STDMETHODCALLTYPE DacDbiInterfaceImpl::FlushCache()
+HRESULT STDMETHODCALLTYPE DacDbiInterfaceImpl::FlushCache(CorDebugStateChange change)
 {
+    // The native DAC conservatively flushes both scopes.
     // Non-reentrant. We don't want to flush cached instances from a callback.
     // That would remove host DAC instances while they're being used.
     DD_NON_REENTRANT_MAY_THROW;

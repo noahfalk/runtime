@@ -81,14 +81,17 @@ public sealed unsafe partial class DacDbiImpl : IDacDbiInterface
         _dataTargetComObject = dataTargetComObject;
     }
 
-    public int FlushCache()
+    public int FlushCache(CorDebugStateChange change)
     {
         using Lock.Scope scope = _apiLock.EnterScope();
-        _target.Flush(FlushScope.All);
+        if (change != CorDebugStateChange.PROCESS_RUNNING && change != CorDebugStateChange.FLUSH_ALL)
+            return HResults.E_INVALIDARG;
+
+        _target.Flush(change == CorDebugStateChange.PROCESS_RUNNING ? FlushScope.ForwardExecution : FlushScope.All);
 
         if (_legacy is not null)
         {
-            int hrLocal = _legacy.FlushCache();
+            int hrLocal = _legacy.FlushCache(change);
             Debug.ValidateHResult(HResults.S_OK, hrLocal);
         }
 
@@ -1808,8 +1811,8 @@ public sealed unsafe partial class DacDbiImpl : IDacDbiInterface
 
         try
         {
-            IPlatformAgnosticContext cdacCtx = IPlatformAgnosticContext.GetContextForPlatform(_target);
-            IPlatformAgnosticContext dacCtx = IPlatformAgnosticContext.GetContextForPlatform(_target);
+            IPlatformAgnosticContext cdacCtx = GetDbiContext();
+            IPlatformAgnosticContext dacCtx = GetDbiContext();
             cdacCtx.FillFromBuffer(new Span<byte>(cdac.ToArray()));
             dacCtx.FillFromBuffer(new Span<byte>(legacy.ToArray()));
             sb.Append($" | flags cdac=0x{cdacCtx.RawContextFlags:X8} dac=0x{dacCtx.RawContextFlags:X8}");
@@ -1843,10 +1846,12 @@ public sealed unsafe partial class DacDbiImpl : IDacDbiInterface
             uint allFlags = ctx.AllContextFlags;
             ThreadData threadData = _target.Contracts.Thread.GetThreadData(new TargetPointer(vmThread));
             byte[] seedContext = _target.Contracts.StackWalk.GetContext(threadData, ThreadContextSource.Debugger, allFlags);
-            seedContext.AsSpan().CopyTo(new Span<byte>(pInternalContextBuffer, seedContext.Length));
+            byte[] dbiContext = ConvertContextForDbi(seedContext);
+            dbiContext.AsSpan().CopyTo(new Span<byte>(pInternalContextBuffer, dbiContext.Length));
 
+            // The contract walker still consumes the target's context, not the DBI host's layout.
             handleData = new StackWalkHandleData(_target.Contracts.StackWalk, threadData);
-            SeedHandleFromNativeContext(handleData, pInternalContextBuffer, isFirst: true);
+            handleData.Reset(seedContext, isFirst: true);
             *ppSFIHandle = handleData.GetHandle();
         }
         catch (System.Exception ex)
@@ -1856,7 +1861,7 @@ public sealed unsafe partial class DacDbiImpl : IDacDbiInterface
         // Mirror the create onto the legacy DBI
         if (_legacy is not null)
         {
-            uint contextSize = IPlatformAgnosticContext.GetContextForPlatform(_target).Size;
+            uint contextSize = GetDbiContext().Size;
             nuint legacyHandle = 0;
             byte* pLocal = (byte*)NativeMemory.AlignedAlloc(contextSize, 16);
             try
@@ -1928,7 +1933,6 @@ public sealed unsafe partial class DacDbiImpl : IDacDbiInterface
 
         int hr = HResults.S_OK;
         nuint legacyHandle = 0;
-        uint contextSize = IPlatformAgnosticContext.GetContextForPlatform(_target).Size;
         try
         {
             GCHandle gcHandle = GCHandle.FromIntPtr((nint)pSFIHandle);
@@ -1938,7 +1942,7 @@ public sealed unsafe partial class DacDbiImpl : IDacDbiInterface
 
             if (handleData.IsValid)
             {
-                byte[] context = GetCurrentContextBytes(handleData.Current!);
+                byte[] context = GetDbiFrameContextBytes(handleData.Current!);
                 context.AsSpan().CopyTo(new Span<byte>(pContext, context.Length));
             }
             else
@@ -1953,6 +1957,7 @@ public sealed unsafe partial class DacDbiImpl : IDacDbiInterface
 #if DEBUG
         if (_legacy is not null && legacyHandle != 0)
         {
+            uint contextSize = GetDbiContext().Size;
             byte* pLocal = (byte*)NativeMemory.AlignedAlloc(contextSize, 16);
             try
             {
@@ -2256,8 +2261,10 @@ public sealed unsafe partial class DacDbiImpl : IDacDbiInterface
     }
 
     private byte[] GetDbiFrameContextBytes(IStackDataFrameHandle handle)
+        => ConvertContextForDbi(GetCurrentContextBytes(handle));
+
+    private byte[] ConvertContextForDbi(byte[] context)
     {
-        byte[] context = GetCurrentContextBytes(handle);
         if (_target.Contracts.RuntimeInfo.GetTargetArchitecture() != RuntimeInfoArchitecture.Wasm)
             return context;
 
@@ -2266,7 +2273,12 @@ public sealed unsafe partial class DacDbiImpl : IDacDbiInterface
         return ConvertContextForDbi(wasmContext, RuntimeInformation.ProcessArchitecture);
     }
 
-    internal static byte[] ConvertContextForDbi(IPlatformAgnosticContext wasmContext, Architecture architecture)
+    private IPlatformAgnosticContext GetDbiContext()
+        => _target.Contracts.RuntimeInfo.GetTargetArchitecture() == RuntimeInfoArchitecture.Wasm
+            ? GetDbiContext(RuntimeInformation.ProcessArchitecture)
+            : IPlatformAgnosticContext.GetContextForPlatform(_target);
+
+    private static IPlatformAgnosticContext GetDbiContext(Architecture architecture)
     {
         RuntimeInfoArchitecture dbiArchitecture = architecture switch
         {
@@ -2277,7 +2289,12 @@ public sealed unsafe partial class DacDbiImpl : IDacDbiInterface
             _ => throw new PlatformNotSupportedException(
                 $"WASM debugging is not supported by a DBI running on {architecture}."),
         };
-        IPlatformAgnosticContext dbiContext = IPlatformAgnosticContext.GetContextForArchitecture(dbiArchitecture);
+        return IPlatformAgnosticContext.GetContextForArchitecture(dbiArchitecture);
+    }
+
+    internal static byte[] ConvertContextForDbi(IPlatformAgnosticContext wasmContext, Architecture architecture)
+    {
+        IPlatformAgnosticContext dbiContext = GetDbiContext(architecture);
 
         dbiContext.RawContextFlags = dbiContext.FullContextFlags;
         dbiContext.StackPointer = wasmContext.StackPointer;

@@ -177,6 +177,10 @@ public:
     //
     // Flush the DAC cache. This should be called when target memory changes.
     //
+    // Arguments:
+    //    change - PROCESS_RUNNING for forward execution, allowing caches that
+    //             remain valid across execution to be retained; FLUSH_ALL when
+    //             target memory may have changed arbitrarily.
     //
     // Return Value:
     //    S_OK on success.
@@ -186,7 +190,7 @@ public:
     //    This must be called anytime target memory changes, else all other functions
     //    (besides Release) may yield out-of-date or semantically incorrect results.
     //
-    virtual HRESULT STDMETHODCALLTYPE FlushCache() = 0;
+    virtual HRESULT STDMETHODCALLTYPE FlushCache(CorDebugStateChange change) = 0;
 
     // Release cDAC-owned wrappers for caller-owned COM objects before DBI
     // destroys those objects and unloads the DAC module.

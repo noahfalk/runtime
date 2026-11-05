@@ -69,7 +69,7 @@ public:
 
 
     // Flush the DAC cache. This should be called when target memory changes.
-    HRESULT STDMETHODCALLTYPE FlushCache();
+    HRESULT STDMETHODCALLTYPE FlushCache(CorDebugStateChange change);
 
     HRESULT STDMETHODCALLTYPE Destroy();
 

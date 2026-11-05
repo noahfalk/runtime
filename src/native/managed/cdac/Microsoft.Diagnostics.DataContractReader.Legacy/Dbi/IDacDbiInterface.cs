@@ -541,6 +541,12 @@ public enum CorGCReferenceType : uint
     CorReferenceStack = 0x80000001,
 }
 
+public enum CorDebugStateChange
+{
+    PROCESS_RUNNING = 0x1,
+    FLUSH_ALL = 0x2,
+}
+
 public enum CorDebugSetContextFlags
 {
     SET_CONTEXT_FLAG_ACTIVE_FRAME = 0x1,
@@ -554,7 +560,7 @@ public enum CorDebugSetContextFlags
 public unsafe partial interface IDacDbiInterface
 {
     [PreserveSig]
-    int FlushCache();
+    int FlushCache(CorDebugStateChange change);
 
     [PreserveSig]
     int Destroy();
