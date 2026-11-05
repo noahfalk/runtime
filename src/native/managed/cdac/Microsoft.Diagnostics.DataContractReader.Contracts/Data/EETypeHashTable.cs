@@ -17,6 +17,7 @@ internal sealed partial class EETypeHashTable : IData<EETypeHashTable>
     [DataDescriptorDependency("VolatileEntryNextEntry", "pointer")]
     private partial IReadOnlyList<Entry> InitEntries(Target target, TargetPointer address)
     {
+        using var profile = WasmDbgExactProfile.Measure(WasmDbgExactProfile.Part.TableSnapshot);
         Target.TypeInfo type = target.GetTypeInfo(DataType.EETypeHashTable);
         DacEnumerableHash baseHashTable = new(target, address, type);
 
@@ -26,6 +27,7 @@ internal sealed partial class EETypeHashTable : IData<EETypeHashTable>
             TargetPointer typeHandle = target.ReadPointer(entry);
             entries.Add(new(typeHandle));
         }
+        WasmDbgExactProfile.Add(WasmDbgExactProfile.Counter.SnapshotEntries, (ulong)entries.Count);
         return entries;
     }
 

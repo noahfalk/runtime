@@ -148,6 +148,11 @@ CONFIG_DWORD_INFO(INTERNAL_BreakOnUncaughtException, W("BreakOnUncaughtException
 /// Debugger, Profiler, Diagnostics IPC Ports
 ///
 RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableDiagnostics, W("EnableDiagnostics"), 1, "Allows the debugger, profiler, and diagnostic IPC service ports to be disabled")
+RETAIL_CONFIG_DWORD_INFO(EXTERNAL_WasmDbgExplicitPrefetch, W("WASMDBG_EXPLICIT_PREFETCH"), 0, "Enable explicit WASM debugger type-memory prefetch and the DBI line cache.")
+RETAIL_CONFIG_DWORD_INFO(EXTERNAL_WasmDbgStackPrefetch, W("WASMDBG_STACK_PREFETCH"), 0, "Enable explicit WASM debugger thread stack-memory prefetch.")
+RETAIL_CONFIG_DWORD_INFO(EXTERNAL_WasmDbgFieldPrefetch, W("WASMDBG_FIELD_PREFETCH"), 0, "Prefetch all instance-field type dependencies on first field access per exact type and DAC epoch.")
+RETAIL_CONFIG_DWORD_INFO(EXTERNAL_WasmDbgEvalResultPrefetch, W("WASMDBG_EVAL_RESULT_PREFETCH"), 0, "Prefetch object and type dependencies before materializing a WASM function-evaluation result.")
+RETAIL_CONFIG_DWORD_INFO(EXTERNAL_WasmDbgHandleDereferencePrefetch, W("WASMDBG_HANDLE_DEREFERENCE_PREFETCH"), 0, "Prefetch current handle referent and type dependencies immediately before WASM handle dereferencing.")
 RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableDiagnostics_IPC, W("EnableDiagnostics_IPC"), 1, "Allows the diagnostic IPC service ports to be disabled")
 RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableDiagnostics_Debugger, W("EnableDiagnostics_Debugger"), 1, "Allows the debugger to be disabled")
 RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableDiagnostics_Profiler, W("EnableDiagnostics_Profiler"), 1, "Allows the profiler to be disabled")

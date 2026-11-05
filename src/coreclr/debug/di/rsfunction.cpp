@@ -361,6 +361,7 @@ HRESULT CordbFunction::GetNativeCode(ICorDebugCode **ppCode)
 //-----------------------------------------------------------------------------
 HRESULT CordbFunction::GetILCode(CordbILCode ** ppCode)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     FAIL_IF_NEUTERED(this);
     INTERNAL_SYNC_API_ENTRY(GetProcess()); //
     VALIDATE_POINTER_TO_OBJECT(ppCode, ICorDebugCode **);

@@ -449,6 +449,7 @@ ULONG32 CordbValue::GetSizeForType(CordbType * pType, BoxedValue boxing)
 
 HRESULT CordbValue::CreateBreakpoint(ICorDebugValueBreakpoint **ppBreakpoint)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     VALIDATE_POINTER_TO_OBJECT(ppBreakpoint, ICorDebugValueBreakpoint **);
 
     return E_NOTIMPL;
@@ -531,6 +532,8 @@ HRESULT CordbValue::InternalCreateHandle(CorDebugHandleType      handleType,
     event.CreateHandle.handleType = handleType;
 
     // Note: two-way event here...
+    process->ConfigureHandlePrefetch(&event);
+    UINT32 prefetchFlags = event.CreateHandle.prefetchFlags;
     HRESULT hr = process->SendIPCEvent(&event, sizeof(DebuggerIPCEvent));
     hr = WORST_HR(hr, event.hr);
 
@@ -539,7 +542,7 @@ HRESULT CordbValue::InternalCreateHandle(CorDebugHandleType      handleType,
         _ASSERTE(event.type == DB_IPCE_CREATE_HANDLE_RESULT);
 
         // Initialize the handle value object.
-        hr = pHandle->Init(event.CreateHandleResult.vmObjectHandle);
+        hr = pHandle->Init(event.CreateHandleResult.vmObjectHandle, &event, prefetchFlags);
     }
 
     if (!SUCCEEDED(hr))
@@ -836,6 +839,10 @@ CordbReferenceValue::CordbReferenceValue(CordbAppDomain *              pAppdomai
 }
     m_valueHome.m_pHome = pHome.GetValue();  // throws
     pHome.SuppressRelease();
+#ifdef _WIN32
+    WasmDbgApiTrace origin("DBI::ReferenceValueOrigin", this, 8, remoteValue.pAddress);
+    origin.SetResult(S_OK, !vmObjectHandle.IsNull() ? 1 : remoteValue.IsEmpty() ? 2 : 3);
+#endif
 } // CordbReferenceValue::CordbReferenceValue
 
 // CordbReferenceValue constructor that builds an empty reference value
@@ -938,6 +945,7 @@ HRESULT CordbReferenceValue::QueryInterface(REFIID id, void **pInterface)
 // Return Value: S_OK on success, E_INVALIDARG on failure
 HRESULT CordbReferenceValue::GetType(CorElementType *pType)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     LIMITED_METHOD_CONTRACT;
 
     FAIL_IF_NEUTERED(this);
@@ -1078,6 +1086,7 @@ HRESULT CordbReferenceValue::SetValue(CORDB_ADDRESS address)
 
 HRESULT CordbReferenceValue::DereferenceStrong(ICorDebugValue **ppValue)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
@@ -1779,6 +1788,13 @@ HRESULT CordbReferenceValue::InitRef(MemoryRange localValue)
         }
     }
     EX_CATCH_HRESULT(hr);
+#ifdef _WIN32
+    if (SUCCEEDED(hr))
+    {
+        WasmDbgApiTrace target("DBI::ReferenceValueTarget", this, 8);
+        target.SetResult(hr, m_info.objRef);
+    }
+#endif
     return hr;
 } // CordbReferenceValue::InitRef
 
@@ -1821,6 +1837,10 @@ CordbObjectValue::CordbObjectValue(CordbAppDomain *          pAppdomain,
     _ASSERTE(pAppdomain != NULL);
 
     m_size = m_info.objSize;
+#ifdef _WIN32
+    WasmDbgApiTrace origin("DBI::ObjectValueOrigin", this, 8, remoteValue.pAddress);
+    origin.SetResult(S_OK, m_info.objSize);
+#endif
 
     HRESULT hr = S_FALSE;
 
@@ -2244,6 +2264,9 @@ HRESULT CordbObjectValue::GetFieldValue(ICorDebugClass *pClass,
                                         ICorDebugValue **ppValue)
 {
     PUBLIC_REENTRANT_API_ENTRY(this);
+#ifdef _WIN32
+    WasmDbgApiTrace source("DBI::FieldValueSource", this, 8, fieldDef);
+#endif
     FAIL_IF_NEUTERED(this);
     ATT_REQUIRE_STOPPED_MAY_FAIL(GetProcess());
     VALIDATE_POINTER_TO_OBJECT(pClass, ICorDebugClass *);
@@ -2251,7 +2274,7 @@ HRESULT CordbObjectValue::GetFieldValue(ICorDebugClass *pClass,
 
     COV_VALIDATE_OBJECT();
 
-    HRESULT hr;
+    HRESULT hr = S_OK;
     _ASSERTE(m_type);
 
     if (m_type->m_elementType != ELEMENT_TYPE_CLASS &&
@@ -2266,6 +2289,13 @@ HRESULT CordbObjectValue::GetFieldValue(ICorDebugClass *pClass,
     // fieldDef has to be resolved in the metadata scope of pClass.
 
     RSExtSmartPtr<CordbType> relevantType;
+
+    EX_TRY
+    {
+        GetProcess()->PrefetchFieldMemory(m_type);
+    }
+    EX_CATCH_HRESULT(hr);
+    IfFailRet(hr);
 
     // This object has an ICorDebugType which has the type-parameters for generics.
     // ICorDebugClass provided by the caller does not have type-parameters. So we resolve that
@@ -2286,6 +2316,7 @@ HRESULT CordbObjectValue::GetFieldValue(ICorDebugClass *pClass,
 HRESULT CordbObjectValue::GetVirtualMethod(mdMemberRef memberRef,
                                            ICorDebugFunction **ppFunction)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     VALIDATE_POINTER_TO_OBJECT(ppFunction, ICorDebugFunction **);
     FAIL_IF_NEUTERED(this);
     COV_VALIDATE_OBJECT();
@@ -2297,6 +2328,7 @@ HRESULT CordbObjectValue::GetVirtualMethodAndType(mdMemberRef memberRef,
                                                   ICorDebugFunction **ppFunction,
                                                   ICorDebugType **ppType)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     FAIL_IF_NEUTERED(this);
     VALIDATE_POINTER_TO_OBJECT(ppFunction, ICorDebugFunction **);
     VALIDATE_POINTER_TO_OBJECT(ppFunction, ICorDebugType **);
@@ -2308,6 +2340,7 @@ HRESULT CordbObjectValue::GetVirtualMethodAndType(mdMemberRef memberRef,
 
 HRESULT CordbObjectValue::GetContext(ICorDebugContext **ppContext)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     FAIL_IF_NEUTERED(this);
     VALIDATE_POINTER_TO_OBJECT(ppContext, ICorDebugContext **);
 
@@ -2325,6 +2358,7 @@ HRESULT CordbObjectValue::GetContext(ICorDebugContext **ppContext)
 //
 HRESULT CordbObjectValue::IsValueClass(BOOL * pfIsValueClass)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     FAIL_IF_NEUTERED(this);
     COV_VALIDATE_OBJECT();
 
@@ -2336,6 +2370,7 @@ HRESULT CordbObjectValue::IsValueClass(BOOL * pfIsValueClass)
 
 HRESULT CordbObjectValue::GetManagedCopy(IUnknown **ppObject)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     // GetManagedCopy() is deprecated. In the case where the version of
     // the debugger doesn't match the version of the debuggee, the two processes
     // might have dangerously different notions of the layout of an object.
@@ -2346,6 +2381,7 @@ HRESULT CordbObjectValue::GetManagedCopy(IUnknown **ppObject)
 
 HRESULT CordbObjectValue::SetFromManagedCopy(IUnknown *pObject)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     // Deprecated for the same reason as GetManagedCopy()
     return E_NOTIMPL;
 } // CordbObjectValue::SetFromManagedCopy
@@ -2358,6 +2394,7 @@ HRESULT CordbObjectValue::SetFromManagedCopy(IUnknown *pObject)
 //
 HRESULT CordbObjectValue::GetValue(void *pTo)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     FAIL_IF_NEUTERED(this);
     COV_VALIDATE_OBJECT();
 
@@ -2371,6 +2408,7 @@ HRESULT CordbObjectValue::GetValue(void *pTo)
 
 HRESULT CordbObjectValue::SetValue(void *pFrom)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     // You're not allowed to set a whole object at once.
     return E_INVALIDARG;
 } // CordbObjectValue::SetValue
@@ -3263,6 +3301,7 @@ HRESULT CordbVCObjectValue::GetFieldValue(ICorDebugClass *pClass,
 //        and is responsible for allocation and deallocation.
 HRESULT CordbVCObjectValue::GetValue(void *pTo)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     VALIDATE_POINTER_TO_OBJECT_ARRAY(pTo, BYTE, m_size, false, true);
     FAIL_IF_NEUTERED(this);
 
@@ -3313,6 +3352,7 @@ HRESULT CordbVCObjectValue::SetValue(void * pSrc)
 HRESULT CordbVCObjectValue::GetVirtualMethod(mdMemberRef memberRef,
                                            ICorDebugFunction **ppFunction)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
@@ -3320,17 +3360,20 @@ HRESULT CordbVCObjectValue::GetVirtualMethodAndType(mdMemberRef memberRef,
                                                     ICorDebugFunction **ppFunction,
                                                     ICorDebugType **ppType)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
 HRESULT CordbVCObjectValue::GetContext(ICorDebugContext **ppContext)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
 // self-identifier--always returns true as long as pbIsValueClass is non-Null
 HRESULT CordbVCObjectValue::IsValueClass(BOOL *pbIsValueClass)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     if (pbIsValueClass)
         *pbIsValueClass = TRUE;
 
@@ -3339,12 +3382,14 @@ HRESULT CordbVCObjectValue::IsValueClass(BOOL *pbIsValueClass)
 
 HRESULT CordbVCObjectValue::GetManagedCopy(IUnknown **ppObject)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     // This function is deprecated
     return E_NOTIMPL;
 }
 
 HRESULT CordbVCObjectValue::SetFromManagedCopy(IUnknown *pObject)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     // This function is deprecated
     return E_NOTIMPL;
 }
@@ -3497,6 +3542,7 @@ HRESULT CordbBoxValue::QueryInterface(REFIID id, void **pInterface)
 // ReturnValue: S_OK on success or E_INVALIDARG if pType is NULL
 HRESULT CordbBoxValue::GetType(CorElementType *pType)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     VALIDATE_POINTER_TO_OBJECT(pType, CorElementType *);
 
     *pType = ELEMENT_TYPE_CLASS;
@@ -3506,6 +3552,7 @@ HRESULT CordbBoxValue::GetType(CorElementType *pType)
 
 HRESULT CordbBoxValue::IsValid(BOOL *pbValid)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     VALIDATE_POINTER_TO_OBJECT(pbValid, BOOL *);
 
     // <TODO>@todo: implement tracking of objects across collections.</TODO>
@@ -3515,6 +3562,7 @@ HRESULT CordbBoxValue::IsValid(BOOL *pbValid)
 
 HRESULT CordbBoxValue::CreateRelocBreakpoint(ICorDebugValueBreakpoint **ppBreakpoint)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     VALIDATE_POINTER_TO_OBJECT(ppBreakpoint, ICorDebugValueBreakpoint **);
 
     return E_NOTIMPL;
@@ -3559,12 +3607,14 @@ HRESULT CordbBoxValue::CreatePinnedHandle(
 
 HRESULT CordbBoxValue::GetValue(void *pTo)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     // Can't get a whole copy of a box.
     return E_INVALIDARG;
 }
 
 HRESULT CordbBoxValue::SetValue(void *pFrom)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     // You're not allowed to set a box value.
     return E_INVALIDARG;
 }
@@ -4030,6 +4080,7 @@ HRESULT CordbArrayValue::GetElementAtPosition(ULONG32 nPosition,
 
 HRESULT CordbArrayValue::IsValid(BOOL *pbValid)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     VALIDATE_POINTER_TO_OBJECT(pbValid, BOOL *);
 
     // <TODO>@todo: implement tracking of objects across collections.</TODO>
@@ -4040,6 +4091,7 @@ HRESULT CordbArrayValue::IsValid(BOOL *pbValid)
 HRESULT CordbArrayValue::CreateRelocBreakpoint(
                                       ICorDebugValueBreakpoint **ppBreakpoint)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     VALIDATE_POINTER_TO_OBJECT(ppBreakpoint, ICorDebugValueBreakpoint **);
 
     return E_NOTIMPL;
@@ -4086,6 +4138,7 @@ HRESULT CordbArrayValue::CreatePinnedHandle(
 // Return Value: S_OK on success, E_INVALIDARG or read process memory errors on failure
 HRESULT CordbArrayValue::GetValue(void *pTo)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     VALIDATE_POINTER_TO_OBJECT_ARRAY(pTo, void *, 1, false, true);
     FAIL_IF_NEUTERED(this);
 
@@ -4102,6 +4155,7 @@ HRESULT CordbArrayValue::GetValue(void *pTo)
 
 HRESULT CordbArrayValue::SetValue(void *pFrom)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     // You're not allowed to set a whole array at once.
     return E_INVALIDARG;
 }
@@ -4285,7 +4339,7 @@ void CordbHandleValue::ClearHandle()
 // Arguments:
 //     input: pHandle - non-null CLR ObjectHandle that this CordbHandleValue will represent
 // Return Value: S_OK on success or CORDBG_E_TARGET_INCONSISTENT, E_INVALIDARG, read process memory errors.
-HRESULT CordbHandleValue::Init(VMPTR_OBJECTHANDLE pHandle)
+HRESULT CordbHandleValue::Init(VMPTR_OBJECTHANDLE pHandle, const DebuggerIPCEvent* reply, UINT32 prefetchFlags)
 {
     INTERNAL_SYNC_API_ENTRY(GetProcess());
     HRESULT hr = S_OK;
@@ -4295,6 +4349,16 @@ HRESULT CordbHandleValue::Init(VMPTR_OBJECTHANDLE pHandle)
         // If it is a strong handle, m_pHandle will not be NULL unless Dispose method is called.
         // If it is a weak handle, m_pHandle can be NULL when Dispose is called.
         AssignHandle(pHandle);
+    }
+
+    if (reply != nullptr)
+    {
+        EX_TRY
+        {
+            GetProcess()->CacheHandlePrefetch(reply, prefetchFlags);
+        }
+        EX_CATCH_HRESULT(hr);
+        IfFailRet(hr);
     }
 
     // This will init m_info.
@@ -4313,6 +4377,10 @@ HRESULT CordbHandleValue::Init(VMPTR_OBJECTHANDLE pHandle)
         m_type.Assign(newtype);
     }
 
+#ifdef _WIN32
+    WasmDbgApiTrace origin("DBI::HandleValueOrigin", this, 8);
+    origin.SetResult(hr, m_info.objRef);
+#endif
     return hr;
 } // CordbHandleValue::Init
 
@@ -4692,6 +4760,7 @@ HRESULT CordbHandleValue::GetAddress(CORDB_ADDRESS *pAddress)
 
 HRESULT CordbHandleValue::CreateBreakpoint(ICorDebugValueBreakpoint **ppBreakpoint)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }   // CreateBreakpoint
 
@@ -4769,6 +4838,7 @@ HRESULT CordbHandleValue::GetValue(CORDB_ADDRESS *pValue)
 
 HRESULT CordbHandleValue::SetValue(CORDB_ADDRESS value)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     // do not support SetValue on Handle
     return E_FAIL;
 }   // CordbHandleValue::GetValue
@@ -4795,19 +4865,12 @@ HRESULT CordbHandleValue::Dereference(ICorDebugValue **ppValue)
         return CORDBG_E_HANDLE_HAS_BEEN_DISPOSED;
     }
 
-    hr = RefreshHandleValue();
-    if (FAILED(hr))
-    {
-        return hr;
-    }
-
-    if ((m_info.objRefBad) || (m_info.objRef == (CORDB_ADDRESS)NULL))
-    {
-        return CORDBG_E_BAD_REFERENCE_VALUE;
-    }
-
     EX_TRY
     {
+        GetProcess()->PrefetchHandleDereferenceMemory(m_vmHandle);
+        IfFailThrow(RefreshHandleValue());
+        if ((m_info.objRefBad) || (m_info.objRef == (CORDB_ADDRESS)NULL))
+            ThrowHR(CORDBG_E_BAD_REFERENCE_VALUE);
         hr = CordbReferenceValue::DereferenceCommon(m_appdomain,
         m_type,
         NULL, // don't support typed-by-refs
@@ -4820,6 +4883,7 @@ HRESULT CordbHandleValue::Dereference(ICorDebugValue **ppValue)
 
 HRESULT CordbHandleValue::DereferenceStrong(ICorDebugValue **ppValue)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 

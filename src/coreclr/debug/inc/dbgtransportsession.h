@@ -435,7 +435,7 @@ public:
 #endif // RIGHT_SIDE_COMPILE
 
     // Sends a pre-initialized event to the other side.
-    HRESULT SendEvent(DebuggerIPCEvent * pEvent);
+    HRESULT SendEvent(DebuggerIPCEvent * pEvent, const BYTE* payload = nullptr, DWORD payloadSize = 0);
     HRESULT SendDebugEvent(DebuggerIPCEvent * pEvent);
 
     // Retrieves the auto-reset handle which is signalled by the session each time a new event is received
@@ -447,7 +447,8 @@ public:
     // Copies the last event received from the other side into the provided buffer. This should only be called
     // (once) after the event returned from GetIPCEventReadyEvent()/GetDebugEventReadyEvent() has been signalled.
     void GetNextEvent(DebuggerIPCEvent *pEvent, DWORD cbEvent);
-    HRESULT GetNextEvent(DebuggerIPCEvent *pEvent, DWORD cbEvent, IPCEventType type);
+    HRESULT GetNextEvent(DebuggerIPCEvent *pEvent, DWORD cbEvent, IPCEventType type,
+        BYTE** payload = nullptr, DWORD* payloadSize = nullptr);
 
 #ifdef RIGHT_SIDE_COMPILE
     // Read and write memory on the LS from the RS.
@@ -824,7 +825,8 @@ private:
 
 #endif // _DEBUG
 
-    HRESULT SendEventWorker(DebuggerIPCEvent * pEvent, IPCEventType type);
+    HRESULT SendEventWorker(DebuggerIPCEvent * pEvent, IPCEventType type,
+        const BYTE* payload = nullptr, DWORD payloadSize = 0);
 
     // Sends a pre-formatted message (including the data block, if any). The fWaitsForReply indicates whether
     // the caller is going to block until some sort of reply message is received (for instance an event that

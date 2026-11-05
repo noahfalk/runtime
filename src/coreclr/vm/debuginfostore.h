@@ -114,6 +114,8 @@ class CompressDebugInfo
     static DebugInfoChunks DecodeChunks(IN PTR_BYTE pDebugInfo);
 
 public:
+    static size_t GetBlobSize(PTR_BYTE pDebugInfo);
+
     // Stores the result in LoaderHeap
     static PTR_BYTE Compress(
         IN ICorDebugInfo::OffsetMapping*            pOffsetMapping,

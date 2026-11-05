@@ -30,6 +30,9 @@
 
 #include "readonlydatatargetfacade.h"
 #include "metahost.h"
+#include "wasmdbgdeeptrace.h"
+#include "prefetchdatatarget.h"
+#include "prefetchprotocol.h"
 
 // Defined in dbgutil; resolves a runtime export address from the data target.
 extern "C" bool TryGetSymbol(
@@ -48,18 +51,17 @@ HRESULT EnsureUniversalDbiInitialized();
 struct RSDebuggingInfo;
 extern RSDebuggingInfo * g_pRSDebuggingInfo;
 
-struct DECLSPEC_UUID("E0B81A4D-0F73-4C4E-9D28-4B93CA31E438") DECLSPEC_NOVTABLE
+struct DECLSPEC_UUID("46AF73D0-6127-4F38-823E-391552BA753F") DECLSPEC_NOVTABLE
 ICorDebugProcessControl : public IUnknown
 {
     virtual HRESULT STDMETHODCALLTYPE ContinueProcess() = 0;
     virtual HRESULT STDMETHODCALLTYPE ContinueCompleted() = 0;
     virtual HRESULT STDMETHODCALLTYPE StopProcess() = 0;
-    virtual HRESULT STDMETHODCALLTYPE FuncEvalResultConsumed() = 0;
 };
 
 #ifdef HOST_UNIX
 static const IID IID_ICorDebugProcessControl =
-    {0xe0b81a4d, 0x0f73, 0x4c4e, {0x9d, 0x28, 0x4b, 0x93, 0xca, 0x31, 0xe4, 0x38}};
+    {0x46af73d0, 0x6127, 0x4f38, {0x82, 0x3e, 0x39, 0x15, 0x52, 0xba, 0x75, 0x3f}};
 #endif // HOST_UNIX
 
 EXTERN_C const IID IID_IDebugChannel;
@@ -860,6 +862,11 @@ CordbProcess::CreateDacDbiInterface()
     m_pDacPrimitives = pInterfacePtr;
     m_pLegacyDac = pLegacyDac;
 
+#ifdef _WIN32
+    if (WasmDbgApiTrace::Enabled())
+        m_pDacPrimitives = new WasmDbgTracingDac(m_pDacPrimitives);
+#endif
+
     // Setup DAC target consistency checking based on what we're using for DBI
     IfFailThrow(m_pDacPrimitives->DacSetTargetConsistencyChecks( m_fAssertOnTargetInconsistency ));
 }
@@ -1157,6 +1164,20 @@ CordbProcess::CordbProcess(ULONG64 clrInstanceId,
 
     HRESULT hr = pDataTarget->QueryInterface(IID_ICorDebugDataTarget, reinterpret_cast<void **>(&m_pDACDataTarget));
     IfFailThrow(hr);
+
+    if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_WasmDbgExplicitPrefetch) != 0 ||
+        CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_WasmDbgStackPrefetch) != 0 ||
+        CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_WasmDbgFieldPrefetch) != 0)
+    {
+        m_pPrefetchDataTarget = new PrefetchDataTarget(m_pDACDataTarget, GetProcessLock(),
+            &m_continueCounter, &m_flushCounter);
+        m_pDACDataTarget.Assign(m_pPrefetchDataTarget);
+    }
+
+#ifdef _WIN32
+    if (WasmDbgApiTrace::Enabled() && WasmDbgApiTrace::LogicalReadTracingEnabled())
+        m_pDACDataTarget.Assign(new WasmDbgTracingDataTarget(m_pDACDataTarget));
+#endif
 
 #ifdef FEATURE_INTEROP_DEBUGGING
     m_DbgSupport.m_DebugEventQueueIdx = 0;
@@ -1491,6 +1512,7 @@ void CordbProcess::Neuter()
     // Unload DAC, and then release our final data target references
     FreeDac();
     m_pDACDataTarget.Clear();
+    m_pPrefetchDataTarget = nullptr;
     m_pMutableDataTarget.Clear();
     m_pMetaDataLocator.Clear();
 
@@ -1684,7 +1706,7 @@ void CordbProcess::InitializeDac()
     }
 
     // Always flush dac.
-    ForceDacFlush();
+    ForceDacFlush(FLUSH_ALL);
 }
 
 //---------------------------------------------------------------------------------------
@@ -2023,6 +2045,7 @@ COM_METHOD CordbProcess::CanCommitChanges(ULONG cSnapshots,
                 ICorDebugEditAndContinueSnapshot *pSnapshots[],
                 ICorDebugErrorInfoEnum **pError)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
@@ -2030,6 +2053,7 @@ COM_METHOD CordbProcess::CommitChanges(ULONG cSnapshots,
     ICorDebugEditAndContinueSnapshot *pSnapshots[],
     ICorDebugErrorInfoEnum **pError)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
@@ -2358,7 +2382,7 @@ HRESULT CordbProcess::ProcessStateChanged(CorDebugStateChange eChange)
         switch(eChange)
         {
         case PROCESS_RUNNING:
-            FlushProcessRunning();
+            FlushProcessState(PROCESS_RUNNING);
             break;
 
         case FLUSH_ALL:
@@ -2469,6 +2493,7 @@ HRESULT CordbProcess::EnumerateHeapRegions(ICorDebugHeapSegmentEnum **ppRegions)
 
 HRESULT CordbProcess::GetObject(CORDB_ADDRESS addr, ICorDebugObjectValue **ppObject)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return this->GetObjectInternal(addr, ppObject);
 }
 
@@ -2569,6 +2594,7 @@ HRESULT CordbProcess::EnumerateHandles(CorGCReferenceType types, ICorDebugGCRefe
 
 HRESULT CordbProcess::EnableNGENPolicy(CorDebugNGENPolicy ePolicy)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
@@ -2834,6 +2860,7 @@ HRESULT CordbRefEnum::QueryInterface(REFIID riid, void **ppInterface)
 
 HRESULT CordbRefEnum::Skip(ULONG celt)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
@@ -2856,11 +2883,13 @@ HRESULT CordbRefEnum::Reset()
 
 HRESULT CordbRefEnum::Clone(ICorDebugEnum **ppEnum)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
 HRESULT CordbRefEnum::GetCount(ULONG *pcelt)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
@@ -2997,11 +3026,13 @@ HRESULT CordbHeapEnum::QueryInterface(REFIID riid, void **ppInterface)
 
 HRESULT CordbHeapEnum::Skip(ULONG celt)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
 HRESULT CordbHeapEnum::Reset()
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     Clear();
     return S_OK;
 }
@@ -3025,11 +3056,13 @@ void CordbHeapEnum::Clear()
 
 HRESULT CordbHeapEnum::Clone(ICorDebugEnum **ppEnum)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
 HRESULT CordbHeapEnum::GetCount(ULONG *pcelt)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
@@ -3072,14 +3105,14 @@ HRESULT CordbHeapEnum::Next(ULONG celt, COR_HEAPOBJECT objects[], ULONG *pceltFe
 }
 
 //---------------------------------------------------------------------------------------
-// Flush state for when the process starts running.
+// Flush state after forward execution or an arbitrary target-state change.
 //
 // Notes:
 //   Helper for code:CordbProcess::ProcessStateChanged.
 //   Since ICD Arrowhead does not own the eventing pipeline, it needs the debugger to
 //   notifying it of when the process is running again.  This is like the counterpart
 //   to code:CordbProcess::Filter
-void CordbProcess::FlushProcessRunning()
+void CordbProcess::FlushProcessState(CorDebugStateChange change)
 {
     _ASSERTE(GetProcessLock()->HasLock());
 
@@ -3088,7 +3121,7 @@ void CordbProcess::FlushProcessRunning()
 
     // Safely dispose anything that should be neutered on continue.
     MarkAllThreadsDirty();
-    ForceDacFlush();
+    ForceDacFlush(change);
 }
 
 //---------------------------------------------------------------------------------------
@@ -3124,9 +3157,9 @@ void CordbProcess::FlushAll()
         ThrowHR(CORDBG_E_DETACH_FAILED_OUTSTANDING_TARGET_RESOURCES);
     }
 
-    // FlushAll is a superset of FlushProcessRunning.
+    // FlushAll also discards state that could be retained across forward execution.
     // This will also ensure we clear the DAC cache.
-    FlushProcessRunning();
+    FlushProcessState(FLUSH_ALL);
 
     // If we detach before the CLR is loaded into the debuggee, then we can no-op a lot of work.
     // We sure can't be sending IPC events to the LS before it exists.
@@ -4298,7 +4331,7 @@ HRESULT CordbProcess::ContinueInternal(BOOL fIsOutOfBand)
 
         // Flush will update state, including continue counter and marking
         // frames dirty.
-        this->FlushProcessRunning();
+        this->FlushProcessState(PROCESS_RUNNING);
 
 
         // Tell the RC event thread that something about this process has changed.
@@ -5937,6 +5970,7 @@ HRESULT CordbProcess::GetThread(DWORD dwThreadId, ICorDebugThread **ppThread)
 HRESULT CordbProcess::ThreadForFiberCookie(DWORD fiberCookie,
                                            ICorDebugThread **ppThread)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
@@ -8656,6 +8690,7 @@ HRESULT CordbProcess::GetThreadForTaskID(TASKID taskId, ICorDebugThread2 ** ppTh
 HRESULT
 CordbProcess::GetVersion(COR_VERSION* pVersion)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     if (NULL == pVersion)
     {
         return E_INVALIDARG;
@@ -9521,6 +9556,11 @@ HRESULT CordbRCEventThread::SendIPCEvent(CordbProcess* process,
     _ASSERTE(process != NULL);
     _ASSERTE(event != NULL);
 
+#ifdef _WIN32
+    WasmDbgApiTrace ipcTrace(IPCENames::GetName(event->type), process, 4,
+        event->type, (event->replyRequired ? 1 : 0) | (event->asyncSend ? 2 : 0));
+#endif
+
 #ifdef _DEBUG
     // We need to be synchronized whenever we're sending an IPC Event.
     // This may require our callers' using a Stop-Continue holder.
@@ -9700,6 +9740,10 @@ HRESULT CordbRCEventThread::SendIPCEvent(CordbProcess* process,
 
         if (process->GetEventChannel()->NeedToWaitForAck(event))
         {
+#ifdef _WIN32
+            WasmDbgApiTrace waitTrace(IPCENames::GetName(event->type), process, 5,
+                event->type, event->replyRequired);
+#endif
             STRESS_LOG0(LF_CORDB, LL_INFO1000,"CRCET::SIPCE: waiting for left side to read event. (on RSER)\n");
 
             int32_t waitResult;
@@ -9848,11 +9892,13 @@ HRESULT CordbRCEventThread::SendIPCEvent(CordbProcess* process,
             }
 
             // Done waiting for reply.
-
+#ifdef _WIN32
+            waitTrace.SetResult(hr, event->type);
+#endif
         }
     }
 
-    process->ForceDacFlush();
+    process->ForceDacFlush(PROCESS_RUNNING);
 
     // The hr and hrEvent are 2 very different things.
     // hr tells us whether the event was sent successfully.
@@ -9861,6 +9907,9 @@ HRESULT CordbRCEventThread::SendIPCEvent(CordbProcess* process,
     // But if SUCCEEDED(hr), then hrEvent may still have failed and that could be
     // valuable information.
 
+#ifdef _WIN32
+    ipcTrace.SetResult(hr, event->type);
+#endif
     return hr;
 }
 
@@ -10495,6 +10544,9 @@ HRESULT CordbRCEventThread::WaitForIPCEventFromProcess(CordbProcess * pProcess,
                                                        CordbAppDomain * pAppDomain,
                                                        DebuggerIPCEvent * pEvent)
 {
+#ifdef _WIN32
+    WasmDbgApiTrace waitTrace("WaitForIPCEventFromProcess", pProcess, 5);
+#endif
 
     CORDBRequireProcessStateOKAndSync(pProcess, pAppDomain);
 
@@ -10537,6 +10589,9 @@ HRESULT CordbRCEventThread::WaitForIPCEventFromProcess(CordbProcess * pProcess,
 
         pProcess->m_leftSideEventRead.Set();
 
+#ifdef _WIN32
+        waitTrace.SetResult(hr, pEvent->type);
+#endif
         return hr;
     }
     else if (waitResult == WaitHandle::Timeout)
@@ -11812,7 +11867,7 @@ void CordbWin32EventThread::Win32EventLoop()
         g_pRSDebuggingInfo->m_MRUprocess = m_pProcess;
 
         // Must flush the dac cache since we were just running.
-        m_pProcess->ForceDacFlush();
+        m_pProcess->ForceDacFlush(PROCESS_RUNNING);
 
 #ifdef OUT_OF_PROCESS_SETTHREADCONTEXT
         bool fOutOfProcessSteppingDuringDetach = false;
@@ -12909,7 +12964,7 @@ void CordbProcess::HandleDebugEventForInteropDebugging(const DEBUG_EVENT * pEven
 
     // If we get a new Win32 Debug event, then we need to flush any cached oop data structures.
     // This includes refreshing DAC and our patch table.
-    ForceDacFlush();
+    ForceDacFlush(PROCESS_RUNNING);
     ClearPatchTable();
 
 #ifdef _DEBUG
@@ -13639,7 +13694,7 @@ HRESULT CordbProcess::ContinueShimless()
             DecStopCount();
         }
         m_waitingForSuppliedEventWhileSynchronized = false;
-        FlushProcessRunning();
+        FlushProcessState(PROCESS_RUNNING);
         m_cordb->ProcessStateChanged();
 #ifdef HOST_WINDOWS
         LogWasmProcessState(
@@ -13650,20 +13705,6 @@ HRESULT CordbProcess::ContinueShimless()
 #endif // HOST_WINDOWS
     }
     return retainTargetStop ? S_OK : processControl->ContinueCompleted();
-}
-
-HRESULT CordbProcess::FuncEvalResultConsumed()
-{
-    RSExtSmartPtr<ICorDebugProcessControl> processControl;
-    HRESULT hr = m_pDACDataTarget->QueryInterface(
-        __uuidof(ICorDebugProcessControl),
-        reinterpret_cast<void**>(&processControl));
-    if (FAILED(hr))
-    {
-        return S_OK;
-    }
-
-    return processControl->FuncEvalResultConsumed();
 }
 
 bool CordbProcess::TakeContinueAfterCallback()
@@ -14954,6 +14995,271 @@ HRESULT CordbWin32EventThread::Stop()
 
 
 
+
+void CordbProcess::PrefetchExactTypeMemory(const DebuggerIPCE_ExpandedTypeData& type)
+{
+    if (m_pPrefetchDataTarget == nullptr || m_pEventChannel == nullptr || m_pShim != nullptr ||
+        (type.elementType != ELEMENT_TYPE_CLASS && type.elementType != ELEMENT_TYPE_VALUETYPE))
+        return;
+    static const bool enabled = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_WasmDbgExplicitPrefetch) != 0;
+    if (!enabled)
+        return;
+    // Blocking IPC needs the event thread to acquire the process lock.
+    // Nested callers already holding it retain the normal DAC read path.
+    if (ThreadHoldsProcessLock())
+        return;
+    VMPTR_Assembly assembly = type.ClassTypeData.vmAssembly;
+    if (assembly.IsNull() || m_pPrefetchDataTarget->ContainsAssembly(assembly))
+        return;
+#ifdef _WIN32
+    WasmDbgApiTrace trace("DBI::PrefetchExactTypeMemory", this, 8);
+#endif
+    DebuggerIPCEvent event;
+    InitIPCEvent(&event, DB_IPCE_PREFETCH_TYPE_MEMORY, true, VMPTR_AppDomain::NullPtr());
+    event.PrefetchTypeMemory.version = DebuggerPrefetchProtocol::Version;
+    event.PrefetchTypeMemory.vmAssembly = assembly;
+    [[maybe_unused]] UINT32 count = PrefetchMemory(&event, assembly, VMPTR_Thread::NullPtr());
+#ifdef _WIN32
+    trace.SetResult(S_OK, count);
+#endif
+}
+
+void CordbProcess::PrefetchStackMemory(VMPTR_Thread thread)
+{
+    PrefetchCommonMemory();
+    if (m_pPrefetchDataTarget == nullptr || m_pEventChannel == nullptr || m_pShim != nullptr ||
+        thread.IsNull() || ThreadHoldsProcessLock())
+        return;
+    static const bool enabled = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_WasmDbgStackPrefetch) != 0;
+    if (!enabled || m_pPrefetchDataTarget->ContainsThread(thread))
+        return;
+#ifdef _WIN32
+    WasmDbgApiTrace trace("DBI::PrefetchStackMemory", this, 8);
+#endif
+    DebuggerIPCEvent event;
+    InitIPCEvent(&event, DB_IPCE_PREFETCH_STACK_MEMORY, true, VMPTR_AppDomain::NullPtr());
+    event.PrefetchStackMemory.version = DebuggerPrefetchProtocol::Version;
+    event.PrefetchStackMemory.vmThread = thread;
+    [[maybe_unused]] UINT32 count = PrefetchMemory(&event, VMPTR_Assembly::NullPtr(), thread);
+#ifdef _WIN32
+    trace.SetResult(S_OK, count);
+#endif
+}
+
+void CordbProcess::PrefetchCommonMemory()
+{
+    if (m_pPrefetchDataTarget == nullptr || m_pEventChannel == nullptr || m_pShim != nullptr ||
+        ThreadHoldsProcessLock() || !GetSynchronized())
+        return;
+    static const bool enabled = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_WasmDbgExplicitPrefetch) != 0;
+    if (!enabled || m_pPrefetchDataTarget->ContainsCommon())
+        return;
+#ifdef _WIN32
+    WasmDbgApiTrace trace("DBI::PrefetchCommonMemory", this, 8, m_continueCounter);
+#endif
+    DebuggerIPCEvent event;
+    InitIPCEvent(&event, DB_IPCE_PREFETCH_COMMON_MEMORY, true, VMPTR_AppDomain::NullPtr());
+    event.PrefetchCommonMemory.version = DebuggerPrefetchProtocol::Version;
+    [[maybe_unused]] UINT32 count = PrefetchMemory(&event, VMPTR_Assembly::NullPtr(), VMPTR_Thread::NullPtr(), true);
+#ifdef _WIN32
+    trace.SetResult(S_OK, count);
+#endif
+}
+
+bool CordbProcess::PrefetchEvalResultMemory(VMPTR_OBJECTHANDLE handle, const DebuggerIPCE_ExpandedTypeData& type)
+{
+    if (m_pPrefetchDataTarget == nullptr || m_pEventChannel == nullptr || m_pShim != nullptr ||
+        ThreadHoldsProcessLock() || !GetSynchronized())
+        return false;
+    static const bool enabled = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_WasmDbgEvalResultPrefetch) != 0;
+    if (!enabled)
+        return false;
+#ifdef _WIN32
+    WasmDbgApiTrace trace("DBI::PrefetchEvalResultMemory", this, 8, m_continueCounter);
+#endif
+    UINT32 flags = DebuggerPrefetchProtocol::HandleObject |
+        (m_pPrefetchDataTarget->ContainsCommon() ? 0 : DebuggerPrefetchProtocol::HandleCommon);
+    DebuggerIPCEvent event;
+    InitIPCEvent(&event, DB_IPCE_PREFETCH_EVAL_RESULT_MEMORY, true, VMPTR_AppDomain::NullPtr());
+    event.PrefetchEvalResultMemory.version = DebuggerPrefetchProtocol::Version;
+    event.PrefetchEvalResultMemory.flags = flags;
+    event.PrefetchEvalResultMemory.vmObjectHandle = handle;
+    event.PrefetchEvalResultMemory.resultType = type;
+    [[maybe_unused]] UINT32 count = PrefetchHandleMemory(&event, flags);
+#ifdef _WIN32
+    trace.SetResult(S_OK, count);
+#endif
+    return true;
+}
+
+void CordbProcess::PrefetchHandleDereferenceMemory(VMPTR_OBJECTHANDLE handle)
+{
+    if (m_pPrefetchDataTarget == nullptr || m_pEventChannel == nullptr || m_pShim != nullptr ||
+        ThreadHoldsProcessLock() || !GetSynchronized())
+        return;
+    static const bool enabled = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_WasmDbgHandleDereferencePrefetch) != 0;
+    if (!enabled)
+        return;
+#ifdef _WIN32
+    WasmDbgApiTrace trace("DBI::PrefetchHandleDereferenceMemory", this, 8, m_continueCounter);
+#endif
+    UINT32 flags = DebuggerPrefetchProtocol::HandleObject |
+        (m_pPrefetchDataTarget->ContainsCommon() ? 0 : DebuggerPrefetchProtocol::HandleCommon);
+    DebuggerIPCEvent event;
+    InitIPCEvent(&event, DB_IPCE_PREFETCH_HANDLE_DEREFERENCE_MEMORY, true, VMPTR_AppDomain::NullPtr());
+    event.PrefetchHandleDereferenceMemory.version = DebuggerPrefetchProtocol::Version;
+    event.PrefetchHandleDereferenceMemory.flags = flags;
+    event.PrefetchHandleDereferenceMemory.vmObjectHandle = handle;
+    [[maybe_unused]] UINT32 count = PrefetchHandleMemory(&event, flags);
+#ifdef _WIN32
+    trace.SetResult(S_OK, count);
+#endif
+}
+
+UINT32 CordbProcess::PrefetchHandleMemory(DebuggerIPCEvent* event, UINT32 requestedFlags)
+{
+    HRESULT hr = SendIPCEvent(event, sizeof(*event));
+    BYTE* bytes = nullptr;
+    DWORD size = 0;
+    m_pEventChannel->TakeReplyPayload(&bytes, &size);
+    NewArrayHolder<BYTE> payload(bytes);
+    IfFailThrow(hr);
+    if (event->type != DB_IPCE_PREFETCH_TYPE_MEMORY_RESULT)
+        ThrowHR(E_UNEXPECTED);
+    IfFailThrow(event->hr);
+    const auto& reply = event->PrefetchTypeMemory;
+    bool common = (requestedFlags & DebuggerPrefetchProtocol::HandleCommon) != 0;
+    if (reply.version != DebuggerPrefetchProtocol::Version ||
+        !DebuggerPrefetchProtocol::IsValidHandleReply(reply.version, reply.lineSize, reply.lineCount,
+        reply.commonLineCount, reply.payloadSize, size, true) ||
+        (size != 0 && bytes == nullptr) ||
+        !m_pPrefetchDataTarget->PopulateHandle(reinterpret_cast<const PrefetchLineCache::Line*>(bytes),
+            reply.lineCount, reply.commonLineCount, common))
+        ThrowHR(E_INVALIDARG);
+    return reply.lineCount;
+}
+
+void CordbProcess::InvalidateCommonMemory()
+{
+    if (m_pPrefetchDataTarget != nullptr)
+        m_pPrefetchDataTarget->InvalidateCommon();
+}
+
+void CordbProcess::PrefetchFieldMemory(CordbType* type)
+{
+    if (m_pPrefetchDataTarget == nullptr || m_pEventChannel == nullptr || m_pShim != nullptr ||
+        ThreadHoldsProcessLock() || !GetSynchronized())
+        return;
+    static const bool enabled = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_WasmDbgFieldPrefetch) != 0;
+    // CordbTypes are interned, including their exact generic arguments.
+    UINT_PTR key = reinterpret_cast<UINT_PTR>(type);
+    if (!enabled || type->m_pClass == nullptr || m_pPrefetchDataTarget->ContainsFieldType(key))
+        return;
+    if (type->m_typeHandleExact.IsNull() && type->m_inst.m_cInst != 0)
+        return;
+#ifdef _WIN32
+    WasmDbgApiTrace trace("DBI::PrefetchFieldMemory", this, 8, key);
+#endif
+    DebuggerIPCEvent event;
+    InitIPCEvent(&event, DB_IPCE_PREFETCH_FIELD_MEMORY, true, VMPTR_AppDomain::NullPtr());
+    event.PrefetchFieldMemory.version = DebuggerPrefetchProtocol::Version;
+    event.PrefetchFieldMemory.vmTypeHandle = type->m_typeHandleExact;
+    event.PrefetchFieldMemory.vmModule = type->m_pClass->GetModule()->GetRuntimeModule();
+    event.PrefetchFieldMemory.typeDef = type->m_pClass->GetToken();
+    HRESULT hr = SendIPCEvent(&event, sizeof(event));
+    BYTE* bytes = nullptr;
+    DWORD size = 0;
+    m_pEventChannel->TakeReplyPayload(&bytes, &size);
+    NewArrayHolder<BYTE> payload(bytes);
+    IfFailThrow(hr);
+    if (event.type != DB_IPCE_PREFETCH_TYPE_MEMORY_RESULT)
+        ThrowHR(E_UNEXPECTED);
+    IfFailThrow(event.hr);
+    const auto& reply = event.PrefetchTypeMemory;
+    if (!DebuggerPrefetchProtocol::IsValidReply(reply.version, reply.lineSize, reply.lineCount,
+        reply.payloadSize, size, true) || (size != 0 && bytes == nullptr) ||
+        !m_pPrefetchDataTarget->PopulateFieldType(key,
+            reinterpret_cast<const PrefetchLineCache::Line*>(bytes), reply.lineCount, event.hr == S_OK))
+        ThrowHR(E_INVALIDARG);
+#ifdef _WIN32
+    trace.SetResult(event.hr, reply.lineCount);
+#endif
+}
+
+void CordbProcess::ConfigureHandlePrefetch(DebuggerIPCEvent* event)
+{
+    if (m_pPrefetchDataTarget == nullptr || m_pEventChannel == nullptr || m_pShim != nullptr ||
+        ThreadHoldsProcessLock() || !GetSynchronized())
+        return;
+    static const bool enabled = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_WasmDbgExplicitPrefetch) != 0;
+    if (!enabled)
+        return;
+    event->CreateHandle.prefetchVersion = DebuggerPrefetchProtocol::Version;
+    event->CreateHandle.prefetchFlags = DebuggerPrefetchProtocol::HandleObject |
+        (m_pPrefetchDataTarget->ContainsCommon() ? 0 : DebuggerPrefetchProtocol::HandleCommon);
+}
+
+void CordbProcess::CacheHandlePrefetch(const DebuggerIPCEvent* event, UINT32 requestedFlags)
+{
+    BYTE* bytes = nullptr;
+    DWORD payloadSize = 0;
+    m_pEventChannel->TakeReplyPayload(&bytes, &payloadSize);
+    NewArrayHolder<BYTE> payload(bytes);
+    const auto& reply = event->CreateHandleResult;
+    if (!DebuggerPrefetchProtocol::IsValidHandleReply(reply.version, reply.lineSize, reply.lineCount,
+        reply.commonLineCount, reply.payloadSize, payloadSize, SUCCEEDED(event->hr)) ||
+        (payloadSize != 0 && bytes == nullptr) ||
+        (requestedFlags == 0 ? reply.version != UINT32(0) : reply.version != DebuggerPrefetchProtocol::Version))
+        ThrowHR(E_INVALIDARG);
+    if (requestedFlags == 0)
+        return;
+#ifdef _WIN32
+    WasmDbgApiTrace trace("DBI::CacheHandlePrefetch", this, 8, reply.commonLineCount);
+#endif
+    if (m_pPrefetchDataTarget == nullptr || !m_pPrefetchDataTarget->PopulateHandle(
+        reinterpret_cast<const PrefetchLineCache::Line*>(bytes), reply.lineCount, reply.commonLineCount,
+        (requestedFlags & DebuggerPrefetchProtocol::HandleCommon) != 0))
+        ThrowHR(E_INVALIDARG);
+#ifdef _WIN32
+    trace.SetResult(S_OK, reply.lineCount);
+#endif
+}
+
+void CordbProcess::InvalidateStackMemory()
+{
+    if (m_pPrefetchDataTarget != nullptr)
+    {
+        m_pPrefetchDataTarget->InvalidateStack();
+        m_pPrefetchDataTarget->InvalidateCommon();
+    }
+}
+
+UINT32 CordbProcess::PrefetchMemory(DebuggerIPCEvent* event, VMPTR_Assembly assembly, VMPTR_Thread thread,
+                                  bool common)
+{
+    HRESULT hr = SendIPCEvent(event, sizeof(*event));
+    BYTE* bytes = nullptr;
+    DWORD payloadSize = 0;
+    m_pEventChannel->TakeReplyPayload(&bytes, &payloadSize);
+    NewArrayHolder<BYTE> payload(bytes);
+    IfFailThrow(hr);
+    if (event->type != DB_IPCE_PREFETCH_TYPE_MEMORY_RESULT)
+        ThrowHR(E_UNEXPECTED);
+    IfFailThrow(event->hr);
+    UINT32 count = event->PrefetchTypeMemory.lineCount;
+    static_assert(sizeof(PrefetchLineCache::Line) == DebuggerPrefetchProtocol::RecordSize);
+    if (!DebuggerPrefetchProtocol::IsValidReply(event->PrefetchTypeMemory.version,
+        event->PrefetchTypeMemory.lineSize, count, event->PrefetchTypeMemory.payloadSize,
+        payloadSize, true) || (payloadSize != 0 && bytes == nullptr))
+        ThrowHR(E_INVALIDARG);
+    const auto* lines = reinterpret_cast<const PrefetchLineCache::Line*>(payload.GetValue());
+    bool populated = common ? m_pPrefetchDataTarget->PopulateCommon(lines, count) :
+        thread.IsNull() ? m_pPrefetchDataTarget->Populate(assembly, lines, count) :
+        m_pPrefetchDataTarget->PopulateThread(thread, lines, count);
+    if (!populated)
+        ThrowHR(E_INVALIDARG);
+    return count;
+}
 
 // Allocate a buffer of cbBuffer bytes in the target.
 //

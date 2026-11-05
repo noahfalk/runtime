@@ -1056,6 +1056,7 @@ void CheckMemLeaks()
 // any resources that we're about to release.
 HRESULT Cordb::Terminate()
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     LOG((LF_CORDB, LL_INFO10000, "[%x] Terminating Cordb\n", GetCurrentThreadId()));
 
     if (!m_initialized)
@@ -1200,6 +1201,7 @@ HRESULT Cordb::QueryInterface(REFIID id, void **pInterface)
 //
 HRESULT Cordb::Initialize(void)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     HRESULT hr = S_OK;
 
     FAIL_IF_NEUTERED(this);
@@ -1426,6 +1428,7 @@ HRESULT Cordb::SetTargetCLR(HMODULE hmodTargetCLR)
 // the callback underneath us)
 HRESULT Cordb::SetManagedHandler(ICorDebugManagedCallback *pCallback)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     if (!m_initialized)
         return E_FAIL;
 
@@ -1488,6 +1491,7 @@ HRESULT Cordb::SetManagedHandler(ICorDebugManagedCallback *pCallback)
 
 HRESULT Cordb::SetUnmanagedHandler(ICorDebugUnmanagedCallback *pCallback)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     if (!m_initialized)
         return E_FAIL;
 
@@ -1626,6 +1630,7 @@ HRESULT Cordb::DebugActiveProcess(DWORD dwProcessId,
                                   BOOL fWin32Attach,
                                   ICorDebugProcess **ppProcess)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return DebugActiveProcessCommon(NULL, dwProcessId, fWin32Attach, ppProcess);
 }
 
@@ -1764,6 +1769,7 @@ HRESULT Cordb::DebugActiveProcessEx(ICorDebugRemoteTarget * pRemoteTarget,
                                     BOOL fWin32Attach,
                                     ICorDebugProcess ** ppProcess)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     if (pRemoteTarget == NULL)
     {
         return E_INVALIDARG;
@@ -1894,6 +1900,7 @@ void Cordb::EnsureCanLaunchOrAttach(BOOL fWin32DebuggingEnabled)
 // same debug engine version as V2, though this may change in the future.
 HRESULT Cordb::CreateObjectTelesto(REFIID id, void ** pObject)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return CreateObject(CorDebugVersion_2_0, ProcessDescriptor::UNINITIALIZED_PID, NULL, NULL, id, pObject);
 }
 #endif // FEATURE_DBGIPC_TRANSPORT_DI
@@ -1902,6 +1909,7 @@ HRESULT Cordb::CreateObjectTelesto(REFIID id, void ** pObject)
 // Used to create an instance for a ClassFactory (thus an external ref).
 HRESULT Cordb::CreateObject(CorDebugInterfaceVersion iDebuggerVersion, DWORD pid, LPCWSTR lpApplicationGroupId, LPCWSTR dacModulePath, REFIID id, void **object)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     if (id != IID_IUnknown && id != IID_ICorDebug)
         return (E_NOINTERFACE);
 

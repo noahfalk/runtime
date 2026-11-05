@@ -202,6 +202,7 @@ BOOL Frame_SuppressParamTypeArg(TransitionFrame* frame);
 
 class Frame
 {
+    friend class WasmMemoryCollector;
     friend class CheckAsmOffsets;
 #ifdef DACCESS_COMPILE
     friend void Thread::EnumMemoryRegions(CLRDataEnumMemoryFlags flags);

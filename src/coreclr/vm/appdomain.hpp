@@ -1539,6 +1539,9 @@ private:
 template<>
 struct cdac_data<AppDomain>
 {
+#ifndef DACCESS_COMPILE
+    static constexpr PTR_AppDomain* AppDomainAddress = &AppDomain::m_pTheAppDomain;
+#endif
     static constexpr size_t RootAssembly = offsetof(AppDomain, m_pRootAssembly);
     static constexpr size_t AssemblyList = offsetof(AppDomain, m_Assemblies) + offsetof(AppDomain::AssemblyList, m_array);
     static constexpr size_t FriendlyName = offsetof(AppDomain, m_friendlyName);

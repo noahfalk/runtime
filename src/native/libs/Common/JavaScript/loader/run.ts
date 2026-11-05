@@ -19,6 +19,7 @@ type CoreClrDebuggerTransport = {
     dequeueIncoming(count: number): string;
     incomingByteCount(): number;
     enqueueOutgoing(data: string): boolean;
+    enqueueOutgoingBytes(data: Uint8Array): boolean;
     dequeueOutgoing(count: number): string;
     outgoingByteCount(): number;
     pump(): number;
@@ -241,6 +242,11 @@ function initializeCoreClrDebuggerTransport(): void {
         const chunks: Uint8Array[] = [];
         let firstChunkOffset = 0;
         let byteCount = 0;
+        const enqueue = (bytes: Uint8Array): boolean => {
+            chunks.push(bytes);
+            byteCount += bytes.length;
+            return true;
+        };
         return {
             enqueue(data: string): boolean {
                 const decoded = atob(data);
@@ -248,16 +254,17 @@ function initializeCoreClrDebuggerTransport(): void {
                 for (let i = 0; i < decoded.length; i++) {
                     bytes[i] = decoded.charCodeAt(i);
                 }
-                chunks.push(bytes);
-                byteCount += bytes.length;
-                return true;
+                return enqueue(bytes);
+            },
+            enqueueBytes(data: Uint8Array): boolean {
+                return enqueue(data.slice());
             },
             dequeue(count: number): string {
                 const length = Math.min(count, byteCount);
                 if (length === 0) {
                     return "";
                 }
-                const result = new Uint8Array(length);
+                const result: Uint8Array & { toBase64?: () => string } = new Uint8Array(length);
                 let resultOffset = 0;
                 while (resultOffset < length) {
                     const chunk = chunks[0];
@@ -270,6 +277,9 @@ function initializeCoreClrDebuggerTransport(): void {
                         chunks.shift();
                         firstChunkOffset = 0;
                     }
+                }
+                if (typeof result.toBase64 === "function") {
+                    return result.toBase64();
                 }
                 let binary = "";
                 const Base64ChunkSize = 0x8000;
@@ -290,6 +300,7 @@ function initializeCoreClrDebuggerTransport(): void {
         dequeueIncoming: incomingDebuggerTransport.dequeue,
         incomingByteCount: incomingDebuggerTransport.getByteCount,
         enqueueOutgoing: outgoingDebuggerTransport.enqueue,
+        enqueueOutgoingBytes: outgoingDebuggerTransport.enqueueBytes,
         dequeueOutgoing: outgoingDebuggerTransport.dequeue,
         outgoingByteCount: outgoingDebuggerTransport.getByteCount,
         pump: () => Module.ccall<number>("CoreClrWasmDebuggerTransportPump", "number", [], [])

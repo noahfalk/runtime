@@ -1778,7 +1778,7 @@ void DebuggerRCThread::DoFavor(FAVORCALLBACK fp, void * pData)
 // filled in. All it does it wake up the DI and let it know that its
 // safe to copy the event out of this process.
 //
-HRESULT DebuggerRCThread::SendIPCReply()
+HRESULT DebuggerRCThread::SendIPCReply(const BYTE* payload, DWORD payloadSize)
 {
     HRESULT hr = S_OK;
 
@@ -1790,13 +1790,15 @@ HRESULT DebuggerRCThread::SendIPCReply()
 #endif
 
 #if !defined(FEATURE_DBGIPC_TRANSPORT_VM)
+    if (payloadSize != 0)
+        return E_NOTIMPL;
     BOOL succ = m_rightSideEventRead.Set();
     if (!succ)
     {
         hr = CORDBDebuggerSetUnrecoverableWin32Error(m_debugger, 0, false);
     }
 #else // !FEATURE_DBGIPC_TRANSPORT_VM
-    hr = g_pDbgTransport->SendEvent(GetIPCEventReceiveBuffer());
+    hr = g_pDbgTransport->SendEvent(GetIPCEventReceiveBuffer(), payload, payloadSize);
     if (FAILED(hr))
     {
         m_debugger->UnrecoverableError(hr,

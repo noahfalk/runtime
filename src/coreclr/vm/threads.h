@@ -3850,6 +3850,7 @@ typedef DPTR(class ThreadStore) PTR_ThreadStore;
 
 class ThreadStore
 {
+    friend class WasmMemoryCollector;
     friend class Thread;
     friend class ThreadSuspend;
     friend class AppDomain;

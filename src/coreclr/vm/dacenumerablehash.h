@@ -89,6 +89,50 @@ class DacEnumerableHashTable
 {
 public:
 
+#ifdef FEATURE_SINGLE_THREADED_DEBUGGER
+    template <class Visitor>
+    void VisitDebuggerBucketMemory(DWORD hash, Visitor& visitor)
+    {
+        DWORD visited = 0;
+        for (auto buckets = GetBuckets(); buckets != nullptr; buckets = GetNext(buckets))
+        {
+            if (++visited > 100000) ThrowHR(E_INVALIDARG);
+            visitor.Add(buckets, SKIP_SPECIAL_SLOTS * sizeof(void*));
+            DWORD length = GetLength(buckets);
+            if (length == 0) continue;
+            auto slot = buckets + (hash % length) + SKIP_SPECIAL_SLOTS;
+            visitor.Add(slot, sizeof(*slot));
+            // cDAC validates every collision candidate, not just entries with the same full hash.
+            for (auto entry = *slot; !IsEndSentinel(entry); entry = entry->m_pNextEntry)
+            {
+                if (entry == nullptr || ++visited > 100000) ThrowHR(E_INVALIDARG);
+                visitor.Add(entry, sizeof(VolatileEntry));
+                visitor.AddTypeGraph(entry->m_sValue.GetTypeHandle());
+            }
+        }
+    }
+
+    template <class Visitor>
+    void VisitDebuggerTypeMemory(Visitor& visitor)
+    {
+        auto buckets = GetBuckets();
+        visitor.Add(buckets, (GetLength(buckets) + SKIP_SPECIAL_SLOTS) * sizeof(void*));
+        DWORD visited = 0;
+        for (DWORD i = 0; i < GetLength(buckets); i++)
+        {
+            auto entry = buckets[i + SKIP_SPECIAL_SLOTS];
+            while (!IsEndSentinel(entry))
+            {
+                if (entry == nullptr || ++visited > 100000)
+                    ThrowHR(E_INVALIDARG);
+                visitor.Add(entry, sizeof(VolatileEntry));
+                visitor.AddType(entry->m_sValue.GetTypeHandle(), true);
+                entry = entry->m_pNextEntry;
+            }
+        }
+    }
+#endif
+
 #ifdef DACCESS_COMPILE
     // Call during DAC enumeration of memory regions to save in mini-dump to enumerate all hash table data
     // structures. Calls derived-class implementation of EnumMemoryRegionsForEntry to allow additional

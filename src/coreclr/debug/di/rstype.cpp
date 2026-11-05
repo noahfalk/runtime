@@ -12,6 +12,7 @@
 #include "stdafx.h"
 #include "winbase.h"
 #include "corpriv.h"
+#include "wasmdbgexactprofile.h"
 
 
 //-----------------------------------------------------------------------------
@@ -1572,6 +1573,7 @@ HRESULT CordbType::InitInstantiationTypeHandle(BOOL fForceInit)
         {
             // Get the TypeHandle based on the type data
             RSLockHolder lockHolder(GetProcess()->GetProcessLock());
+            WasmDbgExactReadProfile profile;
             hr = pProcess->GetDAC()->GetExactTypeHandle(&typeData, &argInfo, &m_typeHandleExact);
         }
     }
@@ -3011,4 +3013,3 @@ HRESULT CordbTypeEnum::Next(ULONG celt, ICorDebugType *values[], ULONG *pceltFet
 
     return hr;
 }
-

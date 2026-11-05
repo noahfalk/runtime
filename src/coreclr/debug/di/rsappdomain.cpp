@@ -320,6 +320,7 @@ HRESULT CordbAppDomain::CanCommitChanges(
     ICorDebugEditAndContinueSnapshot *pSnapshots[],
     ICorDebugErrorInfoEnum **pError)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
@@ -328,6 +329,7 @@ HRESULT CordbAppDomain::CommitChanges(
     ICorDebugEditAndContinueSnapshot *pSnapshots[],
     ICorDebugErrorInfoEnum **pError)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
@@ -990,12 +992,14 @@ HRESULT CordbAppDomain::GetCachedWinRTTypesForIIDs(
                         GUID                * iids,
                         ICorDebugTypeEnum * * ppTypesEnum)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
 HRESULT CordbAppDomain::GetCachedWinRTTypes(
                         ICorDebugGuidToTypeEnum * * ppTypesEnum)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 

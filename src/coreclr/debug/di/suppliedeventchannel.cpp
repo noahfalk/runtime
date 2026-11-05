@@ -26,6 +26,7 @@ public:
 
     void Delete() override
     {
+        delete[] m_replyPayload;
         delete m_pDCB;
         m_pTransport->Shutdown();
         delete this;
@@ -81,12 +82,17 @@ public:
         SIZE_T eventSize,
         DWORD timeout) override
     {
+        delete[] m_replyPayload;
+        m_replyPayload = nullptr;
+        m_replyPayloadSize = 0;
         while (true)
         {
             HRESULT hr = m_pTransport->GetNextEvent(
                 pReplyEvent,
                 static_cast<DWORD>(eventSize),
-                IPCET_OldStyle);
+                IPCET_OldStyle,
+                &m_replyPayload,
+                &m_replyPayloadSize);
             IfFailRet(hr);
             if ((pReplyEvent->type & DB_IPCE_TYPE_MASK) != DB_IPCE_SYNC_COMPLETE)
             {
@@ -112,6 +118,14 @@ public:
         return E_NOTIMPL;
     }
 
+    void TakeReplyPayload(BYTE** payload, DWORD* payloadSize) override
+    {
+        *payload = m_replyPayload;
+        *payloadSize = m_replyPayloadSize;
+        m_replyPayload = nullptr;
+        m_replyPayloadSize = 0;
+    }
+
     HRESULT GetEventFromLeftSide(DebuggerIPCEvent * pLocalManagedEvent) override
     {
         return m_pTransport->GetNextEvent(
@@ -121,6 +135,8 @@ public:
     }
 
 private:
+    BYTE* m_replyPayload = nullptr;
+    DWORD m_replyPayloadSize = 0;
     DebuggerIPCControlBlock * m_pDCB;
     DbgTransportSession * m_pTransport;
 };

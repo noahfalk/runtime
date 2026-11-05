@@ -1785,10 +1785,14 @@ HRESULT CordbThread::GetAppDomain(ICorDebugAppDomain ** ppAppDomain)
     // if the thread has transitioned to another domain but we haven't received any events
     // from it yet.  So we need to ask the left-side for the current domain.
     HRESULT hr = S_OK;
-    PUBLIC_API_BEGIN(this);
+    PUBLIC_API_NO_LOCK_BEGIN(this);
     {
+        RSLockHolder stopGoLock(GetProcess()->GetStopGoLock());
         ValidateOrThrow(ppAppDomain);
         *ppAppDomain = NULL;
+        GetProcess()->PrefetchCommonMemory();
+        RSLockHolder lockHolder(GetProcess()->GetProcessLock());
+        THROW_IF_NEUTERED(this);
         hr = EnsureThreadIsAlive();
 
         if (SUCCEEDED(hr))
@@ -2243,11 +2247,16 @@ HRESULT CordbThread::CreateStackWalk(ICorDebugStackWalk ** ppStackWalk)
 
     EX_TRY
     {
-        RSLockHolder lockHolder(GetProcess()->GetProcessLock());
-        hr = EnsureThreadIsAlive();
+        // The runtime validates the live-thread token before collecting the snapshot.
+        GetProcess()->PrefetchStackMemory(m_vmThreadToken);
+        {
+            RSLockHolder lockHolder(GetProcess()->GetProcessLock());
+            hr = EnsureThreadIsAlive();
+        }
 
         if (SUCCEEDED(hr))
         {
+            RSLockHolder lockHolder(GetProcess()->GetProcessLock());
             RSInitHolder<CordbStackWalk> pSW(new CordbStackWalk(this));
             pSW->Init();
             pSW.TransferOwnershipExternal(ppStackWalk);
@@ -7847,6 +7856,7 @@ HRESULT CordbJITILFrame::GetChain(ICorDebugChain **ppChain)
 // Each IL frame corresponds to exactly one IL code blob.
 HRESULT CordbJITILFrame::GetCode(ICorDebugCode **ppCode)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     FAIL_IF_NEUTERED(this);
     VALIDATE_POINTER_TO_OBJECT(ppCode, ICorDebugCode **);
 
@@ -7877,6 +7887,7 @@ HRESULT CordbJITILFrame::GetFunction(ICorDebugFunction **ppFunction)
 // Each IL frame corresponds to exactly one function.
 HRESULT CordbJITILFrame::GetFunctionToken(mdMethodDef *pToken)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     FAIL_IF_NEUTERED(this);
     VALIDATE_POINTER_TO_OBJECT(pToken, mdMethodDef *);
 
@@ -8527,6 +8538,9 @@ HRESULT CordbJITILFrame::GetLocalVariable(DWORD dwIndex,
                                           ICorDebugValue **ppValue)
 {
     PUBLIC_REENTRANT_API_ENTRY(this);
+#ifdef _WIN32
+    WasmDbgApiTrace source("DBI::LocalValueSource", this, 8, dwIndex);
+#endif
     VALIDATE_POINTER_TO_OBJECT(ppValue, ICorDebugValue **);
     ATT_REQUIRE_STOPPED_MAY_FAIL(GetProcess());
 
@@ -8589,6 +8603,9 @@ HRESULT CordbJITILFrame::EnumerateArguments(ICorDebugValueEnum **ppValueEnum)
 HRESULT CordbJITILFrame::GetArgument(DWORD dwIndex, ICorDebugValue ** ppValue)
 {
     PUBLIC_REENTRANT_API_ENTRY(this);
+#ifdef _WIN32
+    WasmDbgApiTrace source("DBI::ArgumentValueSource", this, 8, dwIndex);
+#endif
     FAIL_IF_NEUTERED(this);
     VALIDATE_POINTER_TO_OBJECT(ppValue, ICorDebugValue **);
 
@@ -10393,6 +10410,14 @@ HRESULT CordbEval::GetResult(ICorDebugValue **ppResult)
     HRESULT hr = S_OK;
     EX_TRY
     {
+        bool resultInHandle =
+            ((m_resultType.elementType == ELEMENT_TYPE_CLASS) ||
+             (m_resultType.elementType == ELEMENT_TYPE_SZARRAY) ||
+             (m_resultType.elementType == ELEMENT_TYPE_OBJECT) ||
+             (m_resultType.elementType == ELEMENT_TYPE_ARRAY) ||
+             (m_resultType.elementType == ELEMENT_TYPE_STRING));
+        if (!resultInHandle || !GetProcess()->PrefetchEvalResultMemory(m_vmObjectHandle, m_resultType))
+            GetProcess()->PrefetchCommonMemory();
         // Make a ICorDebugValue out of the result.
         CordbAppDomain * pAppDomain;
 
@@ -10412,13 +10437,6 @@ HRESULT CordbEval::GetResult(ICorDebugValue **ppResult)
         CordbType * pType = NULL;
         hr = CordbType::TypeDataToType(pAppDomain, &m_resultType, &pType);
         IfFailThrow(hr);
-
-        bool resultInHandle =
-            ((m_resultType.elementType == ELEMENT_TYPE_CLASS) ||
-            (m_resultType.elementType == ELEMENT_TYPE_SZARRAY) ||
-            (m_resultType.elementType == ELEMENT_TYPE_OBJECT) ||
-            (m_resultType.elementType == ELEMENT_TYPE_ARRAY) ||
-            (m_resultType.elementType == ELEMENT_TYPE_STRING));
 
         if (resultInHandle)
         {
@@ -10476,11 +10494,6 @@ HRESULT CordbEval::GetResult(ICorDebugValue **ppResult)
 
     }
     EX_CATCH_HRESULT(hr);
-
-    if (SUCCEEDED(hr) && *ppResult != NULL)
-    {
-        hr = GetProcess()->FuncEvalResultConsumed();
-    }
 
     return hr;
 }
@@ -10768,6 +10781,7 @@ HRESULT CordbCodeEnum::QueryInterface(REFIID id, void **pInterface)
 
 HRESULT CordbCodeEnum::Skip(ULONG celt)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     HRESULT hr = E_FAIL;
     if ( (m_iCurrent+celt) < m_iMax ||
          celt == 0)
@@ -10781,12 +10795,14 @@ HRESULT CordbCodeEnum::Skip(ULONG celt)
 
 HRESULT CordbCodeEnum::Reset()
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     m_iCurrent = 0;
     return S_OK;
 }
 
 HRESULT CordbCodeEnum::Clone(ICorDebugEnum **ppEnum)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     VALIDATE_POINTER_TO_OBJECT(ppEnum, ICorDebugEnum **);
     (*ppEnum) = NULL;
 
@@ -10822,6 +10838,7 @@ LExit:
 
 HRESULT CordbCodeEnum::GetCount(ULONG *pcelt)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     VALIDATE_POINTER_TO_OBJECT(pcelt, ULONG *);
 
     if( pcelt == NULL)
@@ -10839,6 +10856,7 @@ HRESULT CordbCodeEnum::GetCount(ULONG *pcelt)
 // of individual failures.
 HRESULT CordbCodeEnum::Next(ULONG celt, ICorDebugCode *values[], ULONG *pceltFetched)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     VALIDATE_POINTER_TO_OBJECT_ARRAY(values, ICorDebugClass *,
         celt, true, true);
     VALIDATE_POINTER_TO_OBJECT_OR_NULL(pceltFetched, ULONG *);
@@ -11061,6 +11079,7 @@ HRESULT CordbAsyncFrame::QueryInterface(REFIID id, void **pInterface)
 
 HRESULT CordbAsyncFrame::GetChain(ICorDebugChain **ppChain)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
@@ -11093,6 +11112,7 @@ HRESULT CordbAsyncFrame::GetFunction(ICorDebugFunction **ppFunction)
 
 HRESULT CordbAsyncFrame::GetFunctionToken(mdMethodDef *pToken)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     FAIL_IF_NEUTERED(this);
     VALIDATE_POINTER_TO_OBJECT(pToken, mdMethodDef *);
 
@@ -11103,19 +11123,23 @@ HRESULT CordbAsyncFrame::GetFunctionToken(mdMethodDef *pToken)
 
 HRESULT CordbAsyncFrame::GetStackRange(CORDB_ADDRESS *pStart, CORDB_ADDRESS *pEnd)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
 HRESULT CordbAsyncFrame::CreateStepper(ICorDebugStepper **ppStepper)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 HRESULT CordbAsyncFrame::GetCaller(ICorDebugFrame **ppFrame)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 HRESULT CordbAsyncFrame::GetCallee(ICorDebugFrame **ppFrame)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
@@ -11145,6 +11169,7 @@ HRESULT CordbAsyncFrame::GetIP(ULONG32* pnOffset, CorDebugMappingResult *pMappin
 
 HRESULT CordbAsyncFrame::SetIP(ULONG32 nOffset)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 HRESULT CordbAsyncFrame::EnumerateLocalVariables(ICorDebugValueEnum **ppValueEnum)
@@ -11237,14 +11262,17 @@ HRESULT CordbAsyncFrame::GetArgument(DWORD dwIndex, ICorDebugValue ** ppValue)
 }
 HRESULT CordbAsyncFrame::GetStackDepth(ULONG32 *pDepth)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 HRESULT CordbAsyncFrame::GetStackValue(DWORD dwIndex, ICorDebugValue **ppValue)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 HRESULT CordbAsyncFrame::CanSetIP(ULONG32 nOffset)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
@@ -11255,6 +11283,7 @@ HRESULT CordbAsyncFrame::CanSetIP(ULONG32 nOffset)
 // Called at an EnC remap opportunity to remap to the latest version of a function
 HRESULT CordbAsyncFrame::RemapFunction(ULONG32 nOffset)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
@@ -11293,6 +11322,7 @@ HRESULT CordbAsyncFrame::EnumerateTypeParameters(ICorDebugTypeEnum **ppTypeParam
 
 HRESULT CordbAsyncFrame::GetReturnValueForILOffset(ULONG32 ILoffset, ICorDebugValue** ppReturnValue)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 

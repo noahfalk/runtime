@@ -364,6 +364,12 @@ public:
     PCODE GetTemporaryEntryPoint();
 #endif
 
+    PTR_MethodDescCodeData GetCodeDataIfExists()
+    {
+        LIMITED_METHOD_DAC_CONTRACT;
+        return VolatileLoadWithoutBarrier(&m_codeData);
+    }
+
     PCODE GetTemporaryEntryPointIfExists()
     {
         LIMITED_METHOD_CONTRACT;

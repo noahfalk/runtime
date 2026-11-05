@@ -220,6 +220,13 @@ public:
         SIZE_T eventSize,
         DWORD timeout) = 0;
 
+    // Called under the stop-go lock, before sending another request. Caller owns delete[].
+    virtual void TakeReplyPayload(BYTE** payload, DWORD* payloadSize)
+    {
+        *payload = nullptr;
+        *payloadSize = 0;
+    }
+
     //
     // This function and GetEventFromLeftSide() are for the second category of IPC events described in the
     // class header above, i.e. for events which take more than one IPC event to reply.  The event actually

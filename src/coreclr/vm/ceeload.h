@@ -1248,6 +1248,12 @@ public:
 
     PTR_MethodDesc LookupMethodDef(mdMethodDef token);
 
+    LookupMap<PTR_MethodDesc>* GetMethodDefToDescMap()
+    {
+        LIMITED_METHOD_DAC_CONTRACT;
+        return &m_MethodDefToDescMap;
+    }
+
 #ifndef DACCESS_COMPILE
     void EnsureMethodDefCanBeStored(mdMethodDef token)
     {

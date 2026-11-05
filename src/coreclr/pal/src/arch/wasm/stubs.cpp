@@ -115,11 +115,13 @@ extern "C" int unw_is_signal_frame(int)
 
 /* threading */
 
+#ifndef FEATURE_BROWSER_SHARED_MEMORY
 extern "C" int pthread_setschedparam(pthread_t, int, const struct sched_param *)
 {
     _ASSERT(!"pthread_setschedparam not implemented on wasm");
     return 0;
 }
+#endif
 
 #if defined(TARGET_WASI)
 // WASI build skips thread/context.cpp (no native_context_t / siginfo_t /

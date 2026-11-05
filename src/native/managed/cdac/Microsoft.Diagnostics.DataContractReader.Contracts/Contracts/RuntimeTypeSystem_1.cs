@@ -463,6 +463,7 @@ internal partial struct RuntimeTypeSystem_1 : IRuntimeTypeSystem
 
     public ITypeHandle GetTypeHandle(TargetPointer typeHandlePointer)
     {
+        using var profile = WasmDbgExactProfile.Measure(WasmDbgExactProfile.Part.TypeHandle);
         TypeHandleBits addressLowBits = (TypeHandleBits)((ulong)typeHandlePointer & ((ulong)_target.PointerSize - 1));
 
         if ((addressLowBits != TypeHandleBits.MethodTable) && (addressLowBits != TypeHandleBits.TypeDesc))
@@ -473,6 +474,7 @@ internal partial struct RuntimeTypeSystem_1 : IRuntimeTypeSystem
         // if we already validated this address, return a handle
         if (_methodTables.ContainsKey(typeHandlePointer))
         {
+            WasmDbgExactProfile.Add(WasmDbgExactProfile.Counter.HandleCacheHits);
             return GetOrCreateTargetTypeHandle(typeHandlePointer);
         }
 
@@ -488,6 +490,7 @@ internal partial struct RuntimeTypeSystem_1 : IRuntimeTypeSystem
         // Check if we cached the underlying data already
         if (_target.ProcessedData.TryGet(methodTablePointer, out Data.MethodTable? methodTableData))
         {
+            WasmDbgExactProfile.Add(WasmDbgExactProfile.Counter.DataCacheHits);
             // we already cached the data, we must have validated the address, create the representation struct for our use
             MethodTable trustedMethodTable = new MethodTable(methodTableData);
             _ = _methodTables.TryAdd(methodTablePointer, trustedMethodTable);
@@ -504,6 +507,7 @@ internal partial struct RuntimeTypeSystem_1 : IRuntimeTypeSystem
         }
 
         // Otherwise, get ready to validate
+        WasmDbgExactProfile.Add(WasmDbgExactProfile.Counter.NewValidations);
         if (!_typeValidation.TryValidateMethodTablePointer(methodTablePointer))
         {
             throw new ArgumentException("Invalid method table pointer", nameof(typeHandlePointer));
@@ -1335,6 +1339,7 @@ internal partial struct RuntimeTypeSystem_1 : IRuntimeTypeSystem
 
     ITypeHandle? IRuntimeTypeSystem.GetConstructedType(ITypeHandle? typeHandle, CorElementType corElementType, int rank, ImmutableArray<ITypeHandle?> typeArguments, SignatureCallingConvention callConv)
     {
+        using var profile = WasmDbgExactProfile.Measure(WasmDbgExactProfile.Part.ConstructedType);
         if (typeHandle is null && corElementType != CorElementType.FnPtr)
             return null;
         foreach (ITypeHandle? typeArgument in typeArguments)
@@ -1346,18 +1351,24 @@ internal partial struct RuntimeTypeSystem_1 : IRuntimeTypeSystem
             return existing;
         ILoader loaderContract = _target.Contracts.Loader;
         TargetPointer loaderModule;
-        if (corElementType == CorElementType.FnPtr)
-            loaderModule = ComputeLoaderModule(TargetPointer.Null, typeArguments);
-        else if (corElementType == CorElementType.GenericInst)
-            loaderModule = ComputeLoaderModule(GetModule(typeHandle!), typeArguments);
-        else
-            loaderModule = GetLoaderModule(typeHandle!);
+        using (WasmDbgExactProfile.Measure(WasmDbgExactProfile.Part.LoaderModule))
+        {
+            if (corElementType == CorElementType.FnPtr)
+                loaderModule = ComputeLoaderModule(TargetPointer.Null, typeArguments);
+            else if (corElementType == CorElementType.GenericInst)
+                loaderModule = ComputeLoaderModule(GetModule(typeHandle!), typeArguments);
+            else
+                loaderModule = GetLoaderModule(typeHandle!);
+        }
 
         ModuleHandle moduleHandle = loaderContract.GetModuleHandleFromModulePtr(loaderModule);
         ITypeHandle potentialMatch;
         foreach (TargetPointer ptr in loaderContract.GetAvailableTypeParams(moduleHandle))
         {
-            potentialMatch = GetTypeHandle(ptr);
+            WasmDbgExactProfile.Add(WasmDbgExactProfile.Counter.Candidates);
+            using (WasmDbgExactProfile.Measure(WasmDbgExactProfile.Part.CandidateHandle))
+                potentialMatch = GetTypeHandle(ptr);
+            using var matchProfile = WasmDbgExactProfile.Measure(WasmDbgExactProfile.Part.CandidateMatch);
             if (corElementType == CorElementType.GenericInst)
             {
                 if (GenericInstantiationMatch(typeHandle!, potentialMatch, typeArguments) && IsLoaded(potentialMatch))

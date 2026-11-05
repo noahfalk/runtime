@@ -1624,6 +1624,52 @@ struct MSLAYOUT DebuggerIPCEvent
             Portable<HRESULT> hr;                 // success / failure
         } GetBufferResult;
 
+        // Packed line data follows this descriptor in the transport response.
+        struct MSLAYOUT
+        {
+            Portable<UINT32> version;
+            Portable<VMPTR_Assembly> vmAssembly;
+            Portable<UINT32> lineSize;
+            Portable<UINT32> lineCount;
+            Portable<UINT32> payloadSize;
+            Portable<UINT32> commonLineCount;
+        } PrefetchTypeMemory;
+
+        // Stack prefetch uses the same bounded line-record reply as type prefetch.
+        struct MSLAYOUT
+        {
+            Portable<UINT32> version;
+            Portable<VMPTR_Thread> vmThread;
+        } PrefetchStackMemory;
+
+        struct MSLAYOUT
+        {
+            Portable<UINT32> version;
+        } PrefetchCommonMemory;
+
+        struct MSLAYOUT
+        {
+            Portable<UINT32> version;
+            Portable<VMPTR_TypeHandle> vmTypeHandle;
+            Portable<VMPTR_Module> vmModule;
+            Portable<mdTypeDef> typeDef;
+        } PrefetchFieldMemory;
+
+        struct MSLAYOUT
+        {
+            Portable<UINT32> version;
+            Portable<UINT32> flags;
+            Portable<VMPTR_OBJECTHANDLE> vmObjectHandle;
+            DebuggerIPCE_ExpandedTypeData resultType;
+        } PrefetchEvalResultMemory;
+
+        struct MSLAYOUT
+        {
+            Portable<UINT32> version;
+            Portable<UINT32> flags;
+            Portable<VMPTR_OBJECTHANDLE> vmObjectHandle;
+        } PrefetchHandleDereferenceMemory;
+
         // Free a buffer allocated on the left-side with GetBuffer
         struct MSLAYOUT
         {
@@ -1841,11 +1887,18 @@ struct MSLAYOUT DebuggerIPCEvent
         {
             Portable<CORDB_ADDRESS> objectToken;
             Portable<CorDebugHandleType> handleType;
+            Portable<UINT32> prefetchVersion;
+            Portable<UINT32> prefetchFlags;
         } CreateHandle;
 
         struct MSLAYOUT
         {
             Portable<VMPTR_OBJECTHANDLE> vmObjectHandle;
+            Portable<UINT32> version;
+            Portable<UINT32> lineSize;
+            Portable<UINT32> lineCount;
+            Portable<UINT32> commonLineCount;
+            Portable<UINT32> payloadSize;
         } CreateHandleResult;
 
         // used in DB_IPCE_DISPOSE_HANDLE event

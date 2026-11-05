@@ -46,6 +46,7 @@ HRESULT CordbBreakpoint::QueryInterface(REFIID id, void **pInterface)
 
 HRESULT CordbBreakpoint::BaseIsActive(BOOL *pbActive)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     *pbActive = m_active ? TRUE : FALSE;
 
     return S_OK;

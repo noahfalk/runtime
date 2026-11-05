@@ -205,6 +205,7 @@ HRESULT CordbEnumerator<ElemType,
                         EnumInterfaceType, IID_EnumInterfaceType,
                         GetPublicType>::Clone(ICorDebugEnum **ppEnum)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     FAIL_IF_NEUTERED(this);
     VALIDATE_POINTER_TO_OBJECT(ppEnum, ICorDebugEnum **);
     HRESULT hr = S_OK;
@@ -239,6 +240,7 @@ HRESULT CordbEnumerator<ElemType,
                         EnumInterfaceType, IID_EnumInterfaceType,
                         GetPublicType>::GetCount(ULONG *pcelt)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     FAIL_IF_NEUTERED(this);
     VALIDATE_POINTER_TO_OBJECT(pcelt, ULONG *);
 
@@ -260,6 +262,7 @@ HRESULT CordbEnumerator<ElemType,
                         EnumInterfaceType, IID_EnumInterfaceType,
                         GetPublicType>::Reset()
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     FAIL_IF_NEUTERED(this);
 
     m_nextIndex = 0;
@@ -284,6 +287,7 @@ HRESULT CordbEnumerator<ElemType,
                         EnumInterfaceType, IID_EnumInterfaceType,
                         GetPublicType>::Skip(ULONG celt)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     FAIL_IF_NEUTERED(this);
 
     m_nextIndex += celt;
@@ -318,6 +322,7 @@ HRESULT CordbEnumerator<ElemType,
                                              ElemPublicType items[],
                                              ULONG *pceltFetched)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     FAIL_IF_NEUTERED(this);
     VALIDATE_POINTER_TO_OBJECT_ARRAY(items, ElemInterfaceType *,
         celt, true, true);

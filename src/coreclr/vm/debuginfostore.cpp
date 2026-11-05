@@ -1491,6 +1491,13 @@ void CompressDebugInfo::EnumMemoryRegions(CLRDataEnumMemoryFlags flags, PTR_BYTE
 }
 #endif // DACCESS_COMPILE
 
+size_t CompressDebugInfo::GetBlobSize(PTR_BYTE pDebugInfo)
+{
+    DebugInfoChunks chunks = DecodeChunks(pDebugInfo);
+    return AlignUp(dac_cast<TADDR>(chunks.pEnd), sizeof(NibbleReader::NibbleChunkType)) -
+        dac_cast<TADDR>(pDebugInfo);
+}
+
 // Init given a starting address from the start of code.
 void DebugInfoRequest::InitFromStartingAddr(MethodDesc * pMD, PCODE addrCode)
 {

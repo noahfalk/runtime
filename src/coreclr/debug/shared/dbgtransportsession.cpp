@@ -4,6 +4,7 @@
 
 #include "dbgtransportsession.h"
 #include "CLREventBase.h"
+#include "prefetchprotocol.h"
 
 #ifdef RIGHT_SIDE_COMPILE
 #include <minipal/time.h>
@@ -22,7 +23,32 @@ public:
     DWORD            m_messageId;
 #endif // RIGHT_SIDE_COMPILE
     BYTE             m_event[CorDBIPC_BUFFER_SIZE];     // buffer for the IPC event
+    BYTE*            m_payload;
+    DWORD            m_payloadSize;
 };
+
+static bool HasInlinePrefetchPayload(DebuggerIPCEventType type)
+{
+    return type == DB_IPCE_PREFETCH_TYPE_MEMORY_RESULT || type == DB_IPCE_CREATE_HANDLE_RESULT;
+}
+
+static bool IsValidInlinePrefetchPayload(const DebuggerIPCEvent* event, DWORD payloadSize)
+{
+    switch (event->type & DB_IPCE_TYPE_MASK)
+    {
+        case DB_IPCE_PREFETCH_TYPE_MEMORY_RESULT:
+            return DebuggerPrefetchProtocol::IsValidReply(event->PrefetchTypeMemory.version,
+                event->PrefetchTypeMemory.lineSize, event->PrefetchTypeMemory.lineCount,
+                event->PrefetchTypeMemory.payloadSize, payloadSize, SUCCEEDED(event->hr));
+        case DB_IPCE_CREATE_HANDLE_RESULT:
+            return DebuggerPrefetchProtocol::IsValidHandleReply(event->CreateHandleResult.version,
+                event->CreateHandleResult.lineSize, event->CreateHandleResult.lineCount,
+                event->CreateHandleResult.commonLineCount, event->CreateHandleResult.payloadSize,
+                payloadSize, SUCCEEDED(event->hr));
+        default:
+            return payloadSize == 0;
+    }
+}
 
 #ifdef RIGHT_SIDE_COMPILE
 static constexpr bool IsTransportEventReady(
@@ -184,7 +210,11 @@ DbgTransportSession::~DbgTransportSession()
     if (m_rghEventReadyEvent[IPCET_DebugEvent])
         delete m_rghEventReadyEvent[IPCET_DebugEvent];
     if (m_pEventBuffers)
+    {
+        for (DWORD index = 0; index < m_cValidEventBuffers; index++)
+            delete[] m_pEventBuffers[(m_idxEventBufferHead + index) % m_cEventBuffers].m_payload;
         delete [] m_pEventBuffers;
+    }
     if (m_pbCooperativeReceiveBuffer)
         delete [] m_pbCooperativeReceiveBuffer;
 
@@ -736,6 +766,8 @@ HRESULT DbgTransportSession::QueueEvent(const MessageHeader& header, const BYTE*
         return E_INVALIDARG;
     }
     entry->m_type = header.TypeSpecificData.Event.m_eIPCEventType;
+    entry->m_payload = nullptr;
+    entry->m_payloadSize = 0;
 
     bool typeWasEmpty = true;
     for (DWORD index = 0; index < m_cValidEventBuffers; index++)
@@ -902,12 +934,12 @@ bool DbgTransportSession::StopUsingAsDebugger(DebugTicket * pTicket)
 #endif // RIGHT_SIDE_COMPILE
 
 // Sends a pre-initialized event to the other side.
-HRESULT DbgTransportSession::SendEvent(DebuggerIPCEvent *pEvent)
+HRESULT DbgTransportSession::SendEvent(DebuggerIPCEvent *pEvent, const BYTE* payload, DWORD payloadSize)
 {
     DbgTransportLog(LC_Events, "Sending '%s'", IPCENames::GetName(pEvent->type));
     DBG_TRANSPORT_INC_STAT(SentEvent);
 
-    return SendEventWorker(pEvent, IPCET_OldStyle);
+    return SendEventWorker(pEvent, IPCET_OldStyle, payload, payloadSize);
 }
 
 // Sends a pre-initialized event to the other side, but pretend that this is coming from the native pipeline.
@@ -981,6 +1013,10 @@ void DbgTransportSession::GetNextEvent(DebuggerIPCEvent *pEvent, DWORD cbEvent)
 
     // Copy the first valid event into the client's buffer.
     memcpy(pEvent, &m_pEventBuffers[m_idxEventBufferHead].m_event, cbEvent);
+    _ASSERTE(m_pEventBuffers[m_idxEventBufferHead].m_payloadSize == 0);
+    delete[] m_pEventBuffers[m_idxEventBufferHead].m_payload;
+    m_pEventBuffers[m_idxEventBufferHead].m_payload = nullptr;
+    m_pEventBuffers[m_idxEventBufferHead].m_payloadSize = 0;
 #if defined(RIGHT_SIDE_COMPILE) && defined(HOST_WINDOWS)
     LogWasmTransportEvent(
         "dequeued",
@@ -1007,7 +1043,9 @@ void DbgTransportSession::GetNextEvent(DebuggerIPCEvent *pEvent, DWORD cbEvent)
 HRESULT DbgTransportSession::GetNextEvent(
     DebuggerIPCEvent *pEvent,
     DWORD cbEvent,
-    IPCEventType type)
+    IPCEventType type,
+    BYTE** payload,
+    DWORD* payloadSize)
 {
     _ASSERTE(cbEvent <= CorDBIPC_BUFFER_SIZE);
     _ASSERTE(type < IPCET_Max);
@@ -1036,6 +1074,17 @@ HRESULT DbgTransportSession::GetNextEvent(
     }
 
     DWORD eventIndex = (m_idxEventBufferHead + eventOffset) % m_cEventBuffers;
+    DbgEventBufferEntry& entry = m_pEventBuffers[eventIndex];
+    if ((payload == nullptr) != (payloadSize == nullptr) ||
+        (entry.m_payloadSize != 0 && payload == nullptr))
+        return E_INVALIDARG;
+    if (payload != nullptr)
+    {
+        *payload = entry.m_payload;
+        *payloadSize = entry.m_payloadSize;
+    }
+    entry.m_payload = nullptr;
+    entry.m_payloadSize = 0;
     memcpy(pEvent, &m_pEventBuffers[eventIndex].m_event, cbEvent);
 #if defined(RIGHT_SIDE_COMPILE) && defined(HOST_WINDOWS)
     LogWasmTransportEvent("typed dequeue", pEvent->type, type, m_cValidEventBuffers);
@@ -1264,19 +1313,35 @@ HRESULT DbgTransportSession::SetDCB(DebuggerIPCControlBlock *pDCB)
 #endif // RIGHT_SIDE_COMPILE
 
 // Worker function for code:DbgTransportSession::SendEvent and code:DbgTransportSession::SendDebugEvent.
-HRESULT DbgTransportSession::SendEventWorker(DebuggerIPCEvent * pEvent, IPCEventType type)
+HRESULT DbgTransportSession::SendEventWorker(DebuggerIPCEvent * pEvent, IPCEventType type,
+    const BYTE* payload, DWORD payloadSize)
 {
     DWORD cbEvent = GetEventSize(pEvent);
     _ASSERTE(cbEvent <= CorDBIPC_BUFFER_SIZE);
 
     BYTE eventBuffer[CorDBIPC_BUFFER_SIZE];
-    if (!MarshalEventToTransport(pEvent, eventBuffer, cbEvent))
+    bool prefetchReply = HasInlinePrefetchPayload(
+        static_cast<DebuggerIPCEventType>(pEvent->type & DB_IPCE_TYPE_MASK));
+    if (payloadSize > DebuggerPrefetchProtocol::MaximumPayloadSize ||
+        (payloadSize != 0 && (payload == nullptr || !prefetchReply)) ||
+        (prefetchReply && (type != IPCET_OldStyle || !IsValidInlinePrefetchPayload(pEvent, payloadSize))))
+        return E_INVALIDARG;
+    NewArrayHolder<BYTE> combined;
+    BYTE* eventData = eventBuffer;
+    if (payloadSize != 0)
+    {
+        combined = new (nothrow) BYTE[cbEvent + payloadSize];
+        if (combined == nullptr) return E_OUTOFMEMORY;
+        eventData = combined.GetValue();
+        memcpy(eventData + cbEvent, payload, payloadSize);
+    }
+    if (!MarshalEventToTransport(pEvent, eventData, cbEvent))
     {
         return E_INVALIDARG;
     }
 
     Message sMessage;
-    sMessage.Init(MT_Event, eventBuffer, cbEvent);
+    sMessage.Init(MT_Event, eventData, cbEvent + payloadSize);
 
     // Store the event type in the header as well, it's sometimes useful for debugging.
     sMessage.m_sHeader.TypeSpecificData.Event.m_eIPCEventType = type;
@@ -1907,6 +1972,8 @@ void DbgTransportSession::InitSessionState()
 
     m_eState = SS_Opening_NC;
 
+    for (DWORD index = 0; index < m_cValidEventBuffers; index++)
+        delete[] m_pEventBuffers[(m_idxEventBufferHead + index) % m_cEventBuffers].m_payload;
     m_cValidEventBuffers = 0;
     m_idxEventBufferHead = 0;
     m_idxEventBufferTail = 0;
@@ -2548,7 +2615,29 @@ void DbgTransportSession::TransportWorker()
             {
                 // Incoming debugger event.
 
-                if (sReceiveHeader.m_cbDataBlock > CorDBIPC_BUFFER_SIZE)
+                DWORD eventSize = sReceiveHeader.m_cbDataBlock;
+                DWORD payloadSize = 0;
+                DebuggerIPCEventType receivedType = static_cast<DebuggerIPCEventType>(
+                    sReceiveHeader.TypeSpecificData.Event.m_eType & DB_IPCE_TYPE_MASK);
+                bool prefetchReply = HasInlinePrefetchPayload(receivedType);
+                if (prefetchReply)
+                {
+#ifdef RIGHT_SIDE_COMPILE
+                    eventSize = TransportEventHeaderSize +
+                        (receivedType == DB_IPCE_CREATE_HANDLE_RESULT ?
+                            sizeof(((DebuggerIPCEvent*)nullptr)->CreateHandleResult) :
+                            sizeof(((DebuggerIPCEvent*)nullptr)->PrefetchTypeMemory));
+                    if (sReceiveHeader.TypeSpecificData.Event.m_eIPCEventType != IPCET_OldStyle ||
+                        sReceiveHeader.m_cbDataBlock < eventSize ||
+                        sReceiveHeader.m_cbDataBlock - eventSize > DebuggerPrefetchProtocol::MaximumPayloadSize)
+                        HANDLE_CRITICAL_ERROR();
+                    payloadSize = sReceiveHeader.m_cbDataBlock - eventSize;
+#else
+                    HANDLE_CRITICAL_ERROR();
+#endif
+                }
+                if (eventSize > CorDBIPC_BUFFER_SIZE ||
+                    sReceiveHeader.TypeSpecificData.Event.m_eIPCEventType >= IPCET_Max)
                 {
                     _ASSERTE(!"Oversized Event");
                     HANDLE_CRITICAL_ERROR();
@@ -2614,8 +2703,26 @@ void DbgTransportSession::TransportWorker()
                 // and can do so safely since this is the only thread that can receive data and clients can do
                 // nothing that impacts the location of the tail of the buffer list).
                 BYTE eventBuffer[CorDBIPC_BUFFER_SIZE];
-                if (!ReceiveBlock(eventBuffer, sReceiveHeader.m_cbDataBlock))
+                if (!ReceiveBlock(eventBuffer, eventSize))
                     HANDLE_TRANSIENT_ERROR();
+                BYTE nativeEventBuffer[CorDBIPC_BUFFER_SIZE];
+                DebuggerIPCEvent* receivedEvent = reinterpret_cast<DebuggerIPCEvent*>(nativeEventBuffer);
+                if (!MarshalEventFromTransport(eventBuffer, eventSize, receivedEvent))
+                    HANDLE_CRITICAL_ERROR();
+                if (prefetchReply && ((receivedEvent->type & DB_IPCE_TYPE_MASK) != receivedType ||
+                    !IsValidInlinePrefetchPayload(receivedEvent, payloadSize)))
+                    HANDLE_CRITICAL_ERROR();
+                if (!prefetchReply && HasInlinePrefetchPayload(
+                    static_cast<DebuggerIPCEventType>(receivedEvent->type & DB_IPCE_TYPE_MASK)))
+                    HANDLE_CRITICAL_ERROR();
+                NewArrayHolder<BYTE> payload;
+                if (payloadSize != 0)
+                {
+                    payload = new (nothrow) BYTE[payloadSize];
+                    if (payload == nullptr) HANDLE_TRANSIENT_ERROR();
+                    if (!ReceiveBlock(payload.GetValue(), payloadSize))
+                        HANDLE_TRANSIENT_ERROR();
+                }
                 {
                     // We must take the lock to update the count of valid entries though, since clients can
                     // touch this field as well.
@@ -2624,12 +2731,15 @@ void DbgTransportSession::TransportWorker()
                     DbgEventBufferEntry& entry = m_pEventBuffers[m_idxEventBufferTail];
                     if (!MarshalEventFromTransport(
                             eventBuffer,
-                            sReceiveHeader.m_cbDataBlock,
+                            eventSize,
                             reinterpret_cast<DebuggerIPCEvent*>(entry.m_event)))
                     {
                         HANDLE_CRITICAL_ERROR();
                     }
                     entry.m_type = sReceiveHeader.TypeSpecificData.Event.m_eIPCEventType;
+                    entry.m_payload = payload.GetValue();
+                    entry.m_payloadSize = payloadSize;
+                    payload.SuppressRelease();
 #ifdef RIGHT_SIDE_COMPILE
                     entry.m_messageId = sReceiveHeader.m_dwId;
                     DebuggerIPCEvent* queuedEvent = reinterpret_cast<DebuggerIPCEvent*>(entry.m_event);
@@ -3011,6 +3121,10 @@ DWORD DbgTransportSession::GetEventSize(DebuggerIPCEvent *pEvent)
         cbAdditionalSize = sizeof(pEvent->GetBufferResult);
         break;
 
+    case DB_IPCE_PREFETCH_TYPE_MEMORY_RESULT:
+        cbAdditionalSize = sizeof(pEvent->PrefetchTypeMemory);
+        break;
+
     case DB_IPCE_RELEASE_BUFFER_RESULT:
         cbAdditionalSize = sizeof(pEvent->ReleaseBufferResult);
         break;
@@ -3127,6 +3241,25 @@ DWORD DbgTransportSession::GetEventSize(DebuggerIPCEvent *pEvent)
 
     case DB_IPCE_GET_BUFFER:
         cbAdditionalSize = sizeof(pEvent->GetBuffer);
+        break;
+
+    case DB_IPCE_PREFETCH_TYPE_MEMORY:
+        cbAdditionalSize = sizeof(pEvent->PrefetchTypeMemory);
+        break;
+    case DB_IPCE_PREFETCH_STACK_MEMORY:
+        cbAdditionalSize = sizeof(pEvent->PrefetchStackMemory);
+        break;
+    case DB_IPCE_PREFETCH_COMMON_MEMORY:
+        cbAdditionalSize = sizeof(pEvent->PrefetchCommonMemory);
+        break;
+    case DB_IPCE_PREFETCH_FIELD_MEMORY:
+        cbAdditionalSize = sizeof(pEvent->PrefetchFieldMemory);
+        break;
+    case DB_IPCE_PREFETCH_EVAL_RESULT_MEMORY:
+        cbAdditionalSize = sizeof(pEvent->PrefetchEvalResultMemory);
+        break;
+    case DB_IPCE_PREFETCH_HANDLE_DEREFERENCE_MEMORY:
+        cbAdditionalSize = sizeof(pEvent->PrefetchHandleDereferenceMemory);
         break;
 
     case DB_IPCE_RELEASE_BUFFER:

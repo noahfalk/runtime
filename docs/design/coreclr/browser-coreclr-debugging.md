@@ -204,7 +204,6 @@ connection carries synchronous request/response pairs.
 | 6 | `GetPauseState` | Returns the current browser pause epoch, or zero when running |
 | 7 | `WriteDebuggerTransport` | Sends opaque DBI transport bytes to CoreCLR |
 | 8 | `ReadDebuggerTransport` | Receives opaque DBI transport bytes from CoreCLR |
-| 9 | `FuncEvalResultConsumed` | Releases a function-evaluation completion pause and waits for restoration of the original managed pause |
 
 Most responses begin with a 32-bit `HRESULT`. Memory and control responses also
 contain counts or pause epochs as appropriate.
@@ -561,8 +560,8 @@ returns to zero.
 
 ## Function evaluation
 
-Function evaluation requires additional pause coordination because a single
-evaluation temporarily changes the meaning of the browser pause.
+Function evaluation retains the completion pause for inspection and for
+optionally queuing another evaluation.
 
 The implemented sequence is:
 
@@ -576,19 +575,46 @@ The implemented sequence is:
 6. CoreCLR executes the evaluation and sends `DB_IPCE_FUNC_EVAL_COMPLETE`.
 7. CoreCLR pauses in the browser again.
 8. DBI receives the completion event and VIL retrieves the result.
-9. `CordbEval::GetResult` notifies the private process-control interface that
-   the result was consumed.
-10. Concord sends command 9, `FuncEvalResultConsumed`.
-11. BrowserDebugProxy resumes the function-evaluation completion pause.
-12. Before the saved managed context holder is destroyed, CoreCLR creates a new
-    runtime-owned browser pause.
-13. BrowserDebugProxy waits for this later pause epoch before completing command
-    9.
+9. `CordbEval::GetResult` returns the result without resuming the target.
+10. The debugger may inspect the original managed context and queue another eval
+    while stopped at the completion point.
+11. The next Continue resumes the runtime. If another eval is queued,
+    `ProcessAnyPendingEvals` executes it on the next loop iteration. Otherwise
+    the runtime unwinds the eval-processing frames and resumes application code.
 
-The final pause restores the original managed inspection state at a known safe
-point. BrowserDebugProxy must not replace this with an arbitrary
-`Debugger.pause`, because an arbitrary instruction may be unsafe for the next
-function-evaluation setup.
+The eval worker restores the saved filter context and pops its func-eval frame
+before reporting completion. The surrounding context holder remains alive while
+stopped at completion; no additional resume/re-pause is required to inspect or
+queue the next eval. Command 9 is retired and rejected as an invalid command.
+
+With explicit prefetch enabled, the additional opt-in
+`DOTNET_WASMDBG_EVAL_RESULT_PREFETCH=1` makes `GetResult` request
+`DB_IPCE_PREFETCH_EVAL_RESULT_MEMORY` (`0x0260`) for reference-type results.
+The existing result handle and declared expanded type seed a bounded
+object/type dependency snapshot for `EnumerateTypeHandleParams`,
+`GetBasicObjectInfo`, and handle initialization. Missing common data is
+included in the same response. The inline `0x0167` prefetch reply descriptor
+includes a common-line prefix count, so DBI/runtime binaries must match.
+The request does not resume application execution or change handle ownership.
+Result-specific lines expire with the existing volatile DAC-epoch cache;
+primitive and value-type results retain their prior path.
+
+The separate opt-in `DOTNET_WASMDBG_HANDLE_DEREFERENCE_PREFETCH=1` adds
+`DB_IPCE_PREFETCH_HANDLE_DEREFERENCE_MEMORY` (`0x0261`) immediately before
+`CordbHandleValue::Dereference` refreshes its handle. The current handle seeds
+its referent and concrete type dependencies, exception/RCW/delegate
+classification, existing sync-table/sync-block/interop records, and the
+instance/string copy. Arrays use their existing bounds-only collection;
+boxes defer their copies. Instance bytes use the remaining reply budget
+and oversized suffixes retain demand reads.
+
+GetResult no longer collects dereference-only memory. Its earlier snapshot
+still covers declared-type decoding and handle initialization; the later
+request cannot cover these preceding DAC calls. Both requests share bounded
+collection/reply-validation plumbing and the inline `0x0167` response.
+No sync block is created, handle ownership is unchanged, and no snapshot is
+kept across Continue/DAC flush. This lets retained handles obtain fresh
+memory at the stop where they are actually dereferenced.
 
 ## Process-control interface
 
@@ -597,8 +623,10 @@ interface used by universal DBI:
 
 - `ContinueProcess`;
 - `ContinueCompleted`;
-- `StopProcess`;
-- `FuncEvalResultConsumed`.
+- `StopProcess`.
+
+The three-method private interface uses IID
+`46AF73D0-6127-4F38-823E-391552BA753F`; DBI and Concord must be updated together.
 
 This interface connects DBI state transitions to physical browser pause
 transitions without making BrowserDebugProxy understand DBI internals.

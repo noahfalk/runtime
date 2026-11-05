@@ -241,6 +241,7 @@ public:
     PTR_EE_ILEXCEPTION  phdrJitEHInfo;
     PTR_BYTE            phdrJitGCInfo;
     PTR_MethodDesc      phdrMDesc;
+    size_t              cbGCInfo;
 };
 
 struct CodeHeader
@@ -403,9 +404,10 @@ public:
     {
         pRealCodeHeader->phdrJitEHInfo = pEH;
     }
-    void SetGCInfo(PTR_BYTE pGC)
+    void SetGCInfo(PTR_BYTE pGC, size_t size = 0)
     {
         pRealCodeHeader->phdrJitGCInfo = pGC;
+        pRealCodeHeader->cbGCInfo = size;
     }
     void SetMethodDesc(PTR_MethodDesc pMD)
     {
@@ -779,6 +781,7 @@ public:
 
 struct RangeSection
 {
+    friend class WasmMemoryCollector;
     friend class RangeSectionMap;
     enum RangeSectionFlags
     {
@@ -911,6 +914,7 @@ enum class RangeSectionLockState
 // in cooperative mode and during GC stackwalking, the ReaderLock is always considered to be held.
 class RangeSectionMap
 {
+    friend class WasmMemoryCollector;
     class RangeSectionFragment;
     class RangeSectionFragmentPointer;
     typedef DPTR(RangeSectionFragment) PTR_RangeSectionFragment;
@@ -2466,6 +2470,7 @@ struct FunctionTableIndexRangeSection
 
 class ExecutionManager
 {
+    friend class WasmMemoryCollector;
     friend class CorExternalDataAccess;
     friend struct _DacGlobals;
 

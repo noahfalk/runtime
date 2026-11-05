@@ -285,6 +285,7 @@ void CordbHashTableEnum::Neuter()
 
 HRESULT CordbHashTableEnum::Reset()
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     HRESULT hr = S_OK;
 
     m_started = false;

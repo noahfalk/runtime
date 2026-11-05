@@ -12,6 +12,7 @@
 
 #include <winwrap.h>
 #include <windows.h>
+#include "wasmdbgapitrace.h"
 
 #include <utilcode.h>
 #include <minipal/mutex.h>
@@ -98,6 +99,7 @@ struct CallbackAccumulator
         {
             items.Push(item);
         }
+
         EX_CATCH_HRESULT(hr);
         if (FAILED(hr))
             hrError = hr;
@@ -1910,6 +1912,7 @@ public:
     COM_METHOD Next(ULONG celt, ICorDebugProcess *processes[],
                     ULONG *pceltFetched)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         VALIDATE_POINTER_TO_OBJECT_ARRAY(processes, ICorDebugProcess *,
             celt, true, true);
         VALIDATE_POINTER_TO_OBJECT(pceltFetched, ULONG *);
@@ -1924,6 +1927,7 @@ public:
     COM_METHOD Next(ULONG celt, ICorDebugBreakpoint *breakpoints[],
                     ULONG *pceltFetched)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         VALIDATE_POINTER_TO_OBJECT_ARRAY(breakpoints, ICorDebugBreakpoint *,
             celt, true, true);
         VALIDATE_POINTER_TO_OBJECT(pceltFetched, ULONG *);
@@ -1938,6 +1942,7 @@ public:
     COM_METHOD Next(ULONG celt, ICorDebugStepper *steppers[],
                     ULONG *pceltFetched)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         VALIDATE_POINTER_TO_OBJECT_ARRAY(steppers, ICorDebugStepper *,
             celt, true, true);
         VALIDATE_POINTER_TO_OBJECT(pceltFetched, ULONG *);
@@ -1952,6 +1957,7 @@ public:
     COM_METHOD Next(ULONG celt, ICorDebugThread *threads[],
                     ULONG *pceltFetched)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         VALIDATE_POINTER_TO_OBJECT_ARRAY(threads, ICorDebugThread *,
             celt, true, true);
         VALIDATE_POINTER_TO_OBJECT(pceltFetched, ULONG *);
@@ -1966,6 +1972,7 @@ public:
     COM_METHOD Next(ULONG celt, ICorDebugModule *modules[],
                     ULONG *pceltFetched)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         VALIDATE_POINTER_TO_OBJECT_ARRAY(modules, ICorDebugModule *,
             celt, true, true);
         VALIDATE_POINTER_TO_OBJECT(pceltFetched, ULONG *);
@@ -1980,6 +1987,7 @@ public:
     COM_METHOD Next(ULONG celt, ICorDebugAppDomain *appdomains[],
                     ULONG *pceltFetched)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         VALIDATE_POINTER_TO_OBJECT_ARRAY(appdomains, ICorDebugAppDomain *,
             celt, true, true);
         VALIDATE_POINTER_TO_OBJECT(pceltFetched, ULONG *);
@@ -1993,6 +2001,7 @@ public:
     COM_METHOD Next(ULONG celt, ICorDebugAssembly *assemblies[],
                     ULONG *pceltFetched)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         VALIDATE_POINTER_TO_OBJECT_ARRAY(assemblies, ICorDebugAssembly *,
             celt, true, true);
         VALIDATE_POINTER_TO_OBJECT(pceltFetched, ULONG *);
@@ -3219,7 +3228,6 @@ public:
     HRESULT SendManagedContinue();
     HRESULT StopShimless();
     HRESULT ContinueShimless();
-    HRESULT FuncEvalResultConsumed();
     bool TakeContinueAfterCallback();
     bool IsWaitingForSuppliedEventWhileSynchronized() const
     {
@@ -3234,8 +3242,8 @@ public:
 
     void DetachShim();
 
-    // Flush for when the process is running.
-    void FlushProcessRunning();
+    // Flush state after forward execution or an arbitrary target-state change.
+    void FlushProcessState(CorDebugStateChange change);
 
     // Flush all state.
     void FlushAll();
@@ -3435,8 +3443,45 @@ public:
             return E_NOTIMPL;
         }
         _ASSERTE(m_cordb != NULL);
+        if (event->type == DB_IPCE_SET_REFERENCE || event->type == DB_IPCE_SET_VALUE_CLASS ||
+            event->type == DB_IPCE_SET_IP || event->type == DB_IPCE_APPLY_CHANGES)
+            InvalidateStackMemory();
+        switch (event->type)
+        {
+            case DB_IPCE_PREFETCH_TYPE_MEMORY:
+            case DB_IPCE_PREFETCH_STACK_MEMORY:
+            case DB_IPCE_PREFETCH_COMMON_MEMORY:
+            case DB_IPCE_PREFETCH_FIELD_MEMORY:
+            case DB_IPCE_PREFETCH_EVAL_RESULT_MEMORY:
+            case DB_IPCE_PREFETCH_HANDLE_DEREFERENCE_MEMORY:
+            case DB_IPCE_GET_BUFFER:
+            case DB_IPCE_RELEASE_BUFFER:
+            case DB_IPCE_CREATE_HANDLE:
+            case DB_IPCE_DISPOSE_HANDLE:
+            case DB_IPCE_GET_METHOD_JMC_STATUS:
+            case DB_IPCE_IS_TRANSITION_STUB:
+            case DB_IPCE_SET_ENABLE_CUSTOM_NOTIFICATION:
+                break;
+            default:
+                InvalidateCommonMemory();
+                break;
+        }
         return (m_cordb->SendIPCEvent(this, event, eventSize));
     }
+
+    void PrefetchExactTypeMemory(const DebuggerIPCE_ExpandedTypeData& type);
+    void PrefetchStackMemory(VMPTR_Thread thread);
+    void PrefetchCommonMemory();
+    bool PrefetchEvalResultMemory(VMPTR_OBJECTHANDLE handle, const DebuggerIPCE_ExpandedTypeData& type);
+    void PrefetchHandleDereferenceMemory(VMPTR_OBJECTHANDLE handle);
+    UINT32 PrefetchHandleMemory(DebuggerIPCEvent* event, UINT32 requestedFlags);
+    void PrefetchFieldMemory(CordbType* type);
+    void ConfigureHandlePrefetch(DebuggerIPCEvent* event);
+    void CacheHandlePrefetch(const DebuggerIPCEvent* event, UINT32 requestedFlags);
+    void InvalidateCommonMemory();
+    void InvalidateStackMemory();
+    UINT32 PrefetchMemory(DebuggerIPCEvent* event, VMPTR_Assembly assembly, VMPTR_Thread thread,
+                          bool common = false);
 
     void InitAsyncIPCEvent(DebuggerIPCEvent *ipce,
                       DebuggerIPCEventType type,
@@ -3464,6 +3509,12 @@ public:
                  type == DB_IPCE_CONTINUE ||
                  type == DB_IPCE_GET_BUFFER ||
                  type == DB_IPCE_RELEASE_BUFFER ||
+                 type == DB_IPCE_PREFETCH_TYPE_MEMORY ||
+                 type == DB_IPCE_PREFETCH_STACK_MEMORY ||
+                 type == DB_IPCE_PREFETCH_COMMON_MEMORY ||
+                 type == DB_IPCE_PREFETCH_FIELD_MEMORY ||
+                 type == DB_IPCE_PREFETCH_EVAL_RESULT_MEMORY ||
+                 type == DB_IPCE_PREFETCH_HANDLE_DEREFERENCE_MEMORY ||
                  type == DB_IPCE_IS_TRANSITION_STUB ||
                  type == DB_IPCE_ATTACHING ||
                  type == DB_IPCE_APPLY_CHANGES ||
@@ -3626,7 +3677,7 @@ public:
 
     BOOL IsDacInitialized();
 
-    void ForceDacFlush();
+    void ForceDacFlush(CorDebugStateChange change);
 
 
 #ifdef FEATURE_INTEROP_DEBUGGING
@@ -4110,6 +4161,7 @@ private:
 
     HModuleHolder             m_hDacModule;
     RSExtSmartPtr<ICorDebugDataTarget> m_pDACDataTarget;
+    class PrefetchDataTarget* m_pPrefetchDataTarget = nullptr;
 
     // The mutable version of the data target, or null if read-only
     RSExtSmartPtr<ICorDebugMutableDataTarget> m_pMutableDataTarget;
@@ -5352,7 +5404,8 @@ public:
     //-----------------------------------------------------------
     COM_METHOD SetJMCStatus(BOOL fIsUserCode);
     COM_METHOD GetJMCStatus(BOOL * pfIsUserCode);
-    COM_METHOD EnumerateNativeCode(ICorDebugCodeEnum **ppCodeEnum) { return E_NOTIMPL; }
+    COM_METHOD EnumerateNativeCode(ICorDebugCodeEnum **ppCodeEnum) {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0); return E_NOTIMPL; }
     COM_METHOD GetVersionNumber(ULONG32 *pnCurrentVersion);
 
     //-----------------------------------------------------------
@@ -6558,6 +6611,7 @@ public:
     // Provide dummy implementation for some methods. These should never be called.
     COM_METHOD GetCode(ICorDebugCode **ppCode)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         _ASSERTE(!"Don't call this");
         return E_NOTIMPL;
     }
@@ -6610,34 +6664,41 @@ public:
 
     COM_METHOD GetChain(ICorDebugChain **ppChain)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbFrame::GetChain(ppChain));
     }
 
     // We don't expose a code-object for stubs.
     COM_METHOD GetCode(ICorDebugCode **ppCode)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return CORDBG_E_CODE_NOT_AVAILABLE;
     }
 
     COM_METHOD GetFunction(ICorDebugFunction **ppFunction)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbFrame::GetFunction(ppFunction));
     }
     COM_METHOD GetFunctionToken(mdMethodDef *pToken)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbFrame::GetFunctionToken(pToken));
     }
 
     COM_METHOD GetCaller(ICorDebugFrame **ppFrame)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbFrame::GetCaller(ppFrame));
     }
     COM_METHOD GetCallee(ICorDebugFrame **ppFrame)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbFrame::GetCallee(ppFrame));
     }
     COM_METHOD CreateStepper(ICorDebugStepper **ppStepper)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return E_NOTIMPL;
     }
 
@@ -6650,6 +6711,7 @@ public:
     // Get the type of internal frame. This will never be STUBFRAME_NONE.
     COM_METHOD GetFrameType(CorDebugInternalFrameType * pType)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         VALIDATE_POINTER_TO_OBJECT(pType, CorDebugInternalFrameType)
         *pType = m_eFrameType;
         return S_OK;
@@ -6740,41 +6802,49 @@ public:
 
     COM_METHOD GetChain(ICorDebugChain ** ppChain)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return E_NOTIMPL;
     }
 
     COM_METHOD GetCode(ICorDebugCode ** ppCode)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return E_NOTIMPL;
     }
 
     COM_METHOD GetFunction(ICorDebugFunction ** ppFunction)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return E_NOTIMPL;
     }
 
     COM_METHOD GetFunctionToken(mdMethodDef * pToken)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return E_NOTIMPL;
     }
 
     COM_METHOD GetCaller(ICorDebugFrame ** ppFrame)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return E_NOTIMPL;
     }
 
     COM_METHOD GetCallee(ICorDebugFrame ** ppFrame)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return E_NOTIMPL;
     }
 
     COM_METHOD CreateStepper(ICorDebugStepper ** ppStepper)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return E_NOTIMPL;
     }
 
     COM_METHOD GetStackRange(CORDB_ADDRESS * pStart, CORDB_ADDRESS * pEnd)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return E_NOTIMPL;
     }
 
@@ -6905,27 +6975,33 @@ public:
 
     COM_METHOD GetChain(ICorDebugChain **ppChain)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbFrame::GetChain(ppChain));
     }
     COM_METHOD GetCode(ICorDebugCode **ppCode);
     COM_METHOD GetFunction(ICorDebugFunction **ppFunction)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbFrame::GetFunction(ppFunction));
     }
     COM_METHOD GetFunctionToken(mdMethodDef *pToken)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbFrame::GetFunctionToken(pToken));
     }
     COM_METHOD GetCaller(ICorDebugFrame **ppFrame)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbFrame::GetCaller(ppFrame));
     }
     COM_METHOD GetCallee(ICorDebugFrame **ppFrame)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbFrame::GetCallee(ppFrame));
     }
     COM_METHOD CreateStepper(ICorDebugStepper **ppStepper)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbFrame::CreateStepper(ppStepper));
     }
 
@@ -7145,6 +7221,7 @@ public:
                              ULONG32 regCount,
                              CORDB_REGISTER regBuffer[])
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         LIMITED_METHOD_CONTRACT;
 
         VALIDATE_POINTER_TO_OBJECT_ARRAY(regBuffer, CORDB_REGISTER,
@@ -7169,6 +7246,7 @@ public:
     // Friday, July 16, 2004. (This date will be useful for Source control history)
     COM_METHOD SetThreadContext(ULONG32 contextSize, BYTE context[])
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return E_NOTIMPL;
     }
 
@@ -7189,6 +7267,7 @@ public:
                             ULONG32 regCount,
                             CORDB_REGISTER regBuffer[])
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         LIMITED_METHOD_CONTRACT;
 
         VALIDATE_POINTER_TO_OBJECT_ARRAY(regBuffer, CORDB_REGISTER,
@@ -7515,6 +7594,7 @@ public:
     COM_METHOD Activate(BOOL bActive);
     COM_METHOD IsActive(BOOL *pbActive)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         VALIDATE_POINTER_TO_OBJECT(pbActive, BOOL *);
 
         return BaseIsActive(pbActive);
@@ -7586,6 +7666,7 @@ public:
     COM_METHOD Activate(BOOL bActive);
     COM_METHOD IsActive(BOOL *pbActive)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         VALIDATE_POINTER_TO_OBJECT(pbActive, BOOL *);
 
         return BaseIsActive(pbActive);
@@ -8641,6 +8722,7 @@ public:
 
     COM_METHOD GetType(CorElementType *pType)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         LIMITED_METHOD_CONTRACT;
 
         FAIL_IF_NEUTERED(this);
@@ -8652,6 +8734,7 @@ public:
 
     COM_METHOD GetSize(ULONG32 *pSize)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         LIMITED_METHOD_CONTRACT;
 
         FAIL_IF_NEUTERED(this);
@@ -8681,6 +8764,7 @@ public:
 
     COM_METHOD GetSize64(ULONG64 *pSize)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         LIMITED_METHOD_CONTRACT;
 
         FAIL_IF_NEUTERED(this);
@@ -8803,6 +8887,7 @@ public:
     COM_METHOD Activate(BOOL bActive);
     COM_METHOD IsActive(BOOL *pbActive)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         VALIDATE_POINTER_TO_OBJECT(pbActive, BOOL *);
 
         return BaseIsActive(pbActive);
@@ -8863,6 +8948,7 @@ public:
     // Return Value: S_OK on success, E_INVALIDARG on failure
     COM_METHOD GetType(CorElementType *pType)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::GetType(pType));
     }
 
@@ -8872,10 +8958,12 @@ public:
     // Return Value: S_OK on success, E_INVALIDARG on failure
     COM_METHOD GetSize(ULONG32 *pSize)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::GetSize(pSize));
     }
     COM_METHOD CreateBreakpoint(ICorDebugValueBreakpoint **ppBreakpoint)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::CreateBreakpoint(ppBreakpoint));
     }
 
@@ -8887,6 +8975,7 @@ public:
     // Return Value: S_OK on success or E_INVALIDARG if pAddress is null
     COM_METHOD GetAddress(CORDB_ADDRESS *pAddress)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         LIMITED_METHOD_CONTRACT;
 
         FAIL_IF_NEUTERED(this);
@@ -8902,6 +8991,7 @@ public:
 
     COM_METHOD GetExactType(ICorDebugType **ppType)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::GetExactType(ppType));
     }
 
@@ -8911,6 +9001,7 @@ public:
 
     COM_METHOD GetSize64(ULONG64 *pSize)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::GetSize64(pSize));
     }
 
@@ -8995,12 +9086,14 @@ public:
     // Return Value: S_OK on success or E_INVALIDARG
     COM_METHOD GetSize(ULONG32 *pSize)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::GetSize(pSize));
     }
 
     COM_METHOD GetAddress(CORDB_ADDRESS *pAddress);
     COM_METHOD CreateBreakpoint(ICorDebugValueBreakpoint **ppBreakpoint)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::CreateBreakpoint(ppBreakpoint));
     }
 
@@ -9010,6 +9103,7 @@ public:
 
     COM_METHOD GetExactType(ICorDebugType **ppType)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::GetExactType(ppType));
     }
 
@@ -9019,6 +9113,7 @@ public:
 
     COM_METHOD GetSize64(ULONG64 *pSize)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::GetSize64(pSize));
     }
 
@@ -9185,6 +9280,7 @@ public:
 
     COM_METHOD GetExactType(ICorDebugType ** ppType)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::GetExactType(ppType));
     }
 
@@ -9370,15 +9466,18 @@ public:
 
     COM_METHOD GetSize(ULONG32 *pSize)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::GetSize(pSize));
     }
     COM_METHOD CreateBreakpoint(ICorDebugValueBreakpoint **ppBreakpoint)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::CreateBreakpoint(ppBreakpoint));
     }
 
     COM_METHOD GetAddress(CORDB_ADDRESS *pAddress)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         LIMITED_METHOD_CONTRACT;
 
         FAIL_IF_NEUTERED(this);
@@ -9394,6 +9493,7 @@ public:
 
     COM_METHOD GetExactType(ICorDebugType **ppType)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::GetExactType(ppType));
     }
 
@@ -9403,6 +9503,7 @@ public:
 
     COM_METHOD GetSize64(ULONG64 *pSize)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::GetSize64(pSize));
     }
 
@@ -9508,15 +9609,18 @@ public:
 
     COM_METHOD GetSize(ULONG32 *pSize)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::GetSize(pSize));
     }
     COM_METHOD CreateBreakpoint(ICorDebugValueBreakpoint **ppBreakpoint)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::CreateBreakpoint(ppBreakpoint));
     }
 
      COM_METHOD GetAddress(CORDB_ADDRESS *pAddress)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         LIMITED_METHOD_CONTRACT;
 
         FAIL_IF_NEUTERED(this);
@@ -9532,6 +9636,7 @@ public:
 
     COM_METHOD GetExactType(ICorDebugType **ppType)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::GetExactType(ppType));
     }
 
@@ -9541,6 +9646,7 @@ public:
 
     COM_METHOD GetSize64(ULONG64 *pSize)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::GetSize64(pSize));
     }
 
@@ -9639,20 +9745,24 @@ public:
 
     COM_METHOD GetType(CorElementType *pType)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::GetType(pType));
     }
     COM_METHOD GetSize(ULONG32 *pSize)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::GetSize(pSize));
     }
     COM_METHOD GetAddress(CORDB_ADDRESS *pAddress)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         VALIDATE_POINTER_TO_OBJECT(pAddress, CORDB_ADDRESS *);
         *pAddress = m_valueHome.GetAddress();
         return (S_OK);
     }
     COM_METHOD CreateBreakpoint(ICorDebugValueBreakpoint **ppBreakpoint)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::CreateBreakpoint(ppBreakpoint));
     }
 
@@ -9662,6 +9772,7 @@ public:
 
     COM_METHOD GetExactType(ICorDebugType **ppType)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::GetExactType(ppType));
     }
 
@@ -9671,6 +9782,7 @@ public:
 
     COM_METHOD GetSize64(ULONG64 *pSize)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         return (CordbValue::GetSize64(pSize));
     }
 
@@ -9768,7 +9880,7 @@ public:
     CordbHandleValue(CordbAppDomain *appdomain,
                      CordbType *type,
                      CorDebugHandleType handleType);
-    HRESULT Init(VMPTR_OBJECTHANDLE pHandle);
+    HRESULT Init(VMPTR_OBJECTHANDLE pHandle, const DebuggerIPCEvent* reply = nullptr, UINT32 prefetchFlags = 0);
 
     virtual ~CordbHandleValue();
 
@@ -9821,6 +9933,7 @@ public:
 
     COM_METHOD GetExactType(ICorDebugType **ppType)
     {
+        WASMDBG_API_TRACE_OBJECT(nullptr, 0);
         FAIL_IF_NEUTERED(this);
 
         // If AppDomain is already unloaded, return error
@@ -11135,16 +11248,19 @@ public:
 // Big difference is that we can throw across this boundary.
 // @dbgtodo  private shim hook - Eventually, these will all go away since the shim will be fully public.
 #define PUBLIC_API_ENTRY_FOR_SHIM(_pThis) \
+    WASMDBG_API_TRACE_OBJECT(_pThis, 1); \
     PublicAPIHolder __pah;
 
 
 #define PUBLIC_API_UNSAFE_ENTRY_FOR_SHIM(_pThis) \
+    WASMDBG_API_TRACE_OBJECT(_pThis, 1); \
     PublicDebuggerErrorCallbackHolder __pahCallback;
 
 // @dbgtodo  shim, synchronization - Because of the problem mentioned in the comments for
 // PrivateShimCallbackHolder, we need this macro so that we don't hit an assertion when we come back into
 // the RS from the shim.
 #define PUBLIC_REENTRANT_API_ENTRY_FOR_SHIM(_pThis) \
+    WASMDBG_API_TRACE_OBJECT(_pThis, 1); \
     PublicReentrantAPIHolder __pah;
 
 //-----------------------------------------------------------------------------
@@ -11158,6 +11274,7 @@ public:
 // - we're only being called through a public API.
 //-----------------------------------------------------------------------------
 #define PUBLIC_API_ENTRY(_pThis) \
+    WASMDBG_API_TRACE_OBJECT(_pThis, 0); \
     STRESS_LOG2(LF_CORDB, LL_INFO1000, "[Public API '%s', this=%p]\n", __FUNCTION__, static_cast<void*>(_pThis)); \
     PUBLIC_CONTRACT; \
     PublicAPIHolder __pah;
@@ -11167,6 +11284,7 @@ public:
 // public version is heavier (eg, checking the HRESULT) so we benefit from having a fast
 // internal version and calling that directly.
 #define PUBLIC_REENTRANT_API_ENTRY(_pThis) \
+    WASMDBG_API_TRACE_OBJECT(_pThis, 0); \
     STRESS_LOG2(LF_CORDB, LL_INFO1000, "[Public API (re) '%s', this=%p]\n", __FUNCTION__, static_cast<void*>(_pThis)); \
     PUBLIC_CONTRACT; \
     PublicReentrantAPIHolder __pah;
@@ -11296,11 +11414,11 @@ inline void AssertThreadSafeHelper(ThreadSafetyReason r) {
 //-----------------------------------------------------------------------------
 
 #define PUBLIC_CONTRACT
-#define PUBLIC_API_ENTRY_FOR_SHIM(_pThis)
-#define PUBLIC_API_UNSAFE_ENTRY_FOR_SHIM(_pThis)
-#define PUBLIC_REENTRANT_API_ENTRY_FOR_SHIM(_pThis)
-#define PUBLIC_API_ENTRY(_pThis)
-#define PUBLIC_REENTRANT_API_ENTRY(_pThis)
+#define PUBLIC_API_ENTRY_FOR_SHIM(_pThis) WASMDBG_API_TRACE_OBJECT(_pThis, 1);
+#define PUBLIC_API_UNSAFE_ENTRY_FOR_SHIM(_pThis) WASMDBG_API_TRACE_OBJECT(_pThis, 1);
+#define PUBLIC_REENTRANT_API_ENTRY_FOR_SHIM(_pThis) WASMDBG_API_TRACE_OBJECT(_pThis, 1);
+#define PUBLIC_API_ENTRY(_pThis) WASMDBG_API_TRACE_OBJECT(_pThis, 0);
+#define PUBLIC_REENTRANT_API_ENTRY(_pThis) WASMDBG_API_TRACE_OBJECT(_pThis, 0);
 #define INTERNAL_API_ENTRY(_pThis)
 #define INTERNAL_SYNC_API_ENTRY(pProc)
 #define INTERNAL_THREAD_ENTRY(_pThis)

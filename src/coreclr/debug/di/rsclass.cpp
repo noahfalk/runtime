@@ -516,6 +516,7 @@ HRESULT CordbClass::PostProcessUnavailableHRESULT(HRESULT hr,
 //-----------------------------------------------------------------------------
 HRESULT CordbClass::GetModule(ICorDebugModule **ppModule)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     FAIL_IF_NEUTERED(this);
     VALIDATE_POINTER_TO_OBJECT(ppModule, ICorDebugModule **);
 
@@ -536,6 +537,7 @@ HRESULT CordbClass::GetModule(ICorDebugModule **ppModule)
 //-----------------------------------------------------------------------------
 HRESULT CordbClass::GetToken(mdTypeDef *pTypeDef)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     FAIL_IF_NEUTERED(this);
     VALIDATE_POINTER_TO_OBJECT(pTypeDef, mdTypeDef *);
 

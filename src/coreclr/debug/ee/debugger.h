@@ -778,7 +778,7 @@ public:
         return GetRCThreadReceiveBuffer();
     }
 
-    HRESULT SendIPCReply();
+    HRESULT SendIPCReply(const BYTE* payload = nullptr, DWORD payloadSize = 0);
 
     //
     // Handle Favors - get the Helper thread to do a function call for us
@@ -2709,6 +2709,19 @@ private:
 
     // Allocate a buffer and send it to the right side
     HRESULT GetAndSendBuffer(DebuggerRCThread* rcThread, ULONG bufSize);
+#ifdef FEATURE_SINGLE_THREADED_DEBUGGER
+    HRESULT PrefetchMemory(DebuggerRCThread* rcThread, Assembly* assembly, Thread* thread, UINT32 version,
+                           bool common = false);
+    HRESULT PrefetchHandleMemory(DebuggerRCThread* rcThread, OBJECTHANDLE handle, UINT32 flags);
+    HRESULT PrefetchEvalResultMemory(DebuggerRCThread* rcThread, UINT32 version, UINT32 flags,
+                                    OBJECTHANDLE handle, DebuggerIPCE_ExpandedTypeData resultType);
+    HRESULT PrefetchHandleDereferenceMemory(DebuggerRCThread* rcThread, UINT32 version, UINT32 flags,
+                                           OBJECTHANDLE handle);
+    HRESULT PrefetchObjectHandleMemory(DebuggerRCThread* rcThread, UINT32 version, UINT32 flags,
+                                      OBJECTHANDLE handle, const DebuggerIPCE_ExpandedTypeData* resultType);
+    HRESULT PrefetchFieldMemory(DebuggerRCThread* rcThread, UINT32 version, TypeHandle type,
+                                Module* module, mdTypeDef token);
+#endif
 
     // Allocate a buffer in the left-side for use by the right-side
     HRESULT AllocateRemoteBuffer( ULONG bufSize, void **ppBuffer );

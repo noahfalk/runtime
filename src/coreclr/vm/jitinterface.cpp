@@ -11952,7 +11952,7 @@ void * CInterpreterJitInfo::allocGCInfo (size_t size)
     block = m_jitManager->AllocFromJitMetaHeap(m_pMethodBeingCompiled, size);
     _ASSERTE(block);      // AllocFromJitMetaHeap throws if there's not enough memory
 
-    ((InterpreterCodeHeader*)m_CodeHeaderRW)->SetGCInfo(block);
+    ((InterpreterCodeHeader*)m_CodeHeaderRW)->SetGCInfo(block, size);
 
     EE_TO_JIT_TRANSITION();
 

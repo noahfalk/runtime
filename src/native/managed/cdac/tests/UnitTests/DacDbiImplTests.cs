@@ -8,6 +8,7 @@ using System.IO;
 using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
+using System.Reflection.PortableExecutable;
 using System.Runtime.InteropServices;
 using ILCompiler.Reflection.ReadyToRun;
 using Microsoft.Diagnostics.DataContractReader.Contracts;
@@ -89,6 +90,90 @@ public unsafe class DacDbiImplTests
         Assert.Equal(System.HResults.S_OK, dacDbi.DacSetTargetConsistencyChecks(Interop.BOOL.TRUE));
         Assert.Equal(System.HResults.S_OK, dacDbi.DacSetTargetConsistencyChecks(Interop.BOOL.FALSE));
     }
+
+    [Theory]
+    [ClassData(typeof(MockTarget.StdArch))]
+    public void FlushCache_PreservesMetadataOnlyForForwardExecution(MockTarget.Architecture arch)
+    {
+        byte[] image = File.ReadAllBytes(typeof(DacDbiImplTests).Assembly.Location);
+        using PEReader peReader = new(new MemoryStream(image));
+        TargetPointer imageAddress = new(0x10000000);
+        uint imageSize = checked((uint)image.Length);
+        uint imageFlags = 0;
+        ulong metadataAddress = imageAddress.Value + (ulong)peReader.PEHeaders.MetadataStartOffset;
+        int metadataSize = peReader.PEHeaders.MetadataSize;
+        int metadataReads = 0;
+        ModuleHandle handle = default;
+
+        var (_, target) = LoaderTests.CreateLoaderContractWithTarget(arch, (loader, builder) =>
+        {
+            handle = Mod(loader.AddModule().Address);
+            var mockLoader = new Mock<ILoader>();
+            mockLoader.Setup(l => l.TryGetLoadedImageContents(handle, out imageAddress, out imageSize, out imageFlags))
+                .Returns(true);
+            var memory = builder.MemoryBuilder.GetMemoryContext();
+            builder.AddMockContract(mockLoader)
+                .AddContract<IEcmaMetadata>("c1")
+                .UseReader((ulong address, Span<byte> buffer) =>
+                {
+                    if (address >= imageAddress.Value && address - imageAddress.Value < (ulong)image.Length &&
+                        (ulong)buffer.Length <= (ulong)image.Length - (address - imageAddress.Value))
+                    {
+                        if (address == metadataAddress && buffer.Length == metadataSize)
+                            metadataReads++;
+                        image.AsSpan(checked((int)(address - imageAddress.Value)), buffer.Length).CopyTo(buffer);
+                        return 0;
+                    }
+                    return memory.ReadFromTarget(address, buffer);
+                });
+        });
+        DacDbiImpl dacDbi = new(target, legacyObj: null, new());
+
+        Assert.NotNull(target.Contracts.EcmaMetadata.GetMetadata(handle));
+        Assert.Equal(1, metadataReads);
+
+        Assert.Equal(System.HResults.S_OK, dacDbi.FlushCache(CorDebugStateChange.PROCESS_RUNNING));
+        Assert.NotNull(target.Contracts.EcmaMetadata.GetMetadata(handle));
+        Assert.Equal(1, metadataReads);
+
+        Assert.Equal(System.HResults.S_OK, dacDbi.FlushCache(CorDebugStateChange.FLUSH_ALL));
+        Assert.NotNull(target.Contracts.EcmaMetadata.GetMetadata(handle));
+        Assert.Equal(2, metadataReads);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(3)]
+    public void FlushCache_InvalidChange_DoesNotFlush(int change)
+    {
+        var metadata = new Mock<IEcmaMetadata>();
+        TestPlaceholderTarget target = new TestPlaceholderTarget.Builder(
+            new MockTarget.Architecture { IsLittleEndian = true, Is64Bit = true })
+            .AddMockContract(metadata)
+            .Build();
+        _ = target.Contracts.EcmaMetadata;
+        DacDbiImpl dacDbi = new(target, legacyObj: null, new());
+
+        Assert.Equal(System.HResults.E_INVALIDARG, dacDbi.FlushCache((CorDebugStateChange)change));
+        metadata.Verify(m => m.Flush(It.IsAny<FlushScope>()), Times.Never);
+    }
+
+#if DEBUG
+    [Theory]
+    [InlineData(CorDebugStateChange.PROCESS_RUNNING)]
+    [InlineData(CorDebugStateChange.FLUSH_ALL)]
+    public void FlushCache_ForwardsChangeToLegacy(CorDebugStateChange change)
+    {
+        TestPlaceholderTarget target = new TestPlaceholderTarget.Builder(
+            new MockTarget.Architecture { IsLittleEndian = true, Is64Bit = true }).Build();
+        var legacy = new Mock<IDacDbiInterface>();
+        legacy.Setup(d => d.FlushCache(change)).Returns(System.HResults.S_OK);
+        DacDbiImpl dacDbi = new(target, legacy.Object, new());
+
+        Assert.Equal(System.HResults.S_OK, dacDbi.FlushCache(change));
+        legacy.Verify(d => d.FlushCache(change), Times.Once);
+    }
+#endif
 
     [Theory]
     [ClassData(typeof(MockTarget.StdArch))]
@@ -1854,6 +1939,78 @@ public unsafe class DacDbiImplTests
 
         Assert.Equal(expectedRegister, result.vlsBaseReg);
         Assert.Equal(0x28, result.vlsOffset);
+    }
+
+    [Theory]
+    [InlineData(RuntimeInfoArchitecture.Wasm, false)]
+    [InlineData(RuntimeInfoArchitecture.X64, false)]
+    [InlineData(RuntimeInfoArchitecture.Wasm, true)]
+    [InlineData(RuntimeInfoArchitecture.X64, true)]
+    public void StackWalkContext_UsesDbiContextLayout(RuntimeInfoArchitecture targetArchitecture, bool initialContext)
+    {
+        IPlatformAgnosticContext context = IPlatformAgnosticContext.GetContextForArchitecture(targetArchitecture);
+        context.RawContextFlags = context.FullContextFlags;
+        context.StackPointer = new TargetPointer(0x1234);
+        context.FramePointer = new TargetPointer(0x5678);
+        context.InstructionPointer = new TargetCodePointer(0x9abc);
+        byte[] expected = targetArchitecture == RuntimeInfoArchitecture.Wasm
+            ? DacDbiImpl.ConvertContextForDbi(context, RuntimeInformation.ProcessArchitecture)
+            : context.GetBytes();
+
+        var frame = new Mock<IStackDataFrameHandle>();
+        frame.SetupGet(f => f.State).Returns(StackWalkState.Frameless);
+        var stackWalk = new Mock<IStackWalk>();
+        stackWalk.Setup(s => s.CreateStackWalk(It.IsAny<ThreadData>(), It.IsAny<byte[]>(), true))
+            .Callback<ThreadData, byte[], bool>((_, seed, _) =>
+            {
+                if (initialContext)
+                    Assert.Equal(context.GetBytes(), seed);
+            })
+            .Returns([frame.Object]);
+        stackWalk.Setup(s => s.GetContext(It.IsAny<ThreadData>(), ThreadContextSource.Debugger, context.AllContextFlags))
+            .Returns(context.GetBytes());
+        stackWalk.Setup(s => s.GetRawContext(frame.Object)).Returns(context.GetBytes());
+        var runtimeInfo = new Mock<IRuntimeInfo>();
+        runtimeInfo.Setup(r => r.GetTargetArchitecture()).Returns(targetArchitecture);
+        MockTarget.Architecture architecture = new()
+        {
+            IsLittleEndian = true,
+            Is64Bit = targetArchitecture == RuntimeInfoArchitecture.X64,
+        };
+        var target = new TestPlaceholderTarget.Builder(architecture)
+            .AddMockContract(stackWalk)
+            .AddMockContract(runtimeInfo)
+            .AddMockContract(new Mock<IThread>())
+            .Build();
+        DacDbiImpl dacDbi = new(target, legacyObj: null, new());
+        nuint handle = 0;
+        byte[] buffer = new byte[expected.Length + 16];
+        Array.Fill(buffer, (byte)0xa5);
+
+        try
+        {
+            fixed (byte* destination = buffer)
+            {
+                if (initialContext)
+                {
+                    Assert.Equal(System.HResults.S_OK, dacDbi.CreateStackWalk(0x1000, destination, &handle));
+                }
+                else
+                {
+                    StackWalkHandleData handleData = new(stackWalk.Object, default);
+                    handleData.Reset([], isFirst: true);
+                    handle = handleData.GetHandle();
+                    Assert.Equal(System.HResults.S_OK, dacDbi.GetStackWalkCurrentContext(handle, destination));
+                }
+            }
+            Assert.Equal(expected, buffer.AsSpan(0, expected.Length).ToArray());
+            Assert.All(buffer.AsSpan(expected.Length).ToArray(), value => Assert.Equal((byte)0xa5, value));
+        }
+        finally
+        {
+            if (handle != 0)
+                Assert.Equal(System.HResults.S_OK, dacDbi.DeleteStackWalk(handle));
+        }
     }
 
     [Fact]

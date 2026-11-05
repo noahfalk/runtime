@@ -28,6 +28,7 @@
 
 #if defined(FEATURE_DBGIPC_TRANSPORT_VM)
 #include "dbgtransportsession.h"
+#include "prefetchprotocol.h"
 #endif // FEATURE_DBGIPC_TRANSPORT_VM
 
 #ifdef FEATURE_SINGLE_THREADED_DEBUGGER
@@ -7739,12 +7740,6 @@ void Debugger::ProcessAnyPendingEvals(Thread *pThread)
         // The return value should be NULL when FuncEvalHijackWorker is called as part of an exception.
         _ASSERTE(ret == NULL);
 
-#ifdef FEATURE_SINGLE_THREADED_DEBUGGER
-        if (GetPendingEvals() == NULL || GetPendingEvals()->GetPendingEval(pThread) == NULL)
-        {
-            PauseSingleThreadedDebugger();
-        }
-#endif // FEATURE_SINGLE_THREADED_DEBUGGER
     }
 
 #endif
@@ -10730,6 +10725,35 @@ bool Debugger::HandleIPCEvent(DebuggerIPCEvent * pEvent)
         }
         break;
 
+#ifdef FEATURE_SINGLE_THREADED_DEBUGGER
+    case DB_IPCE_PREFETCH_TYPE_MEMORY:
+        PrefetchMemory(m_pRCThread, pEvent->PrefetchTypeMemory.vmAssembly.GetRawPtr(), nullptr,
+                           pEvent->PrefetchTypeMemory.version);
+        break;
+    case DB_IPCE_PREFETCH_STACK_MEMORY:
+        PrefetchMemory(m_pRCThread, nullptr, pEvent->PrefetchStackMemory.vmThread.GetRawPtr(),
+                           pEvent->PrefetchStackMemory.version);
+        break;
+    case DB_IPCE_PREFETCH_COMMON_MEMORY:
+        PrefetchMemory(m_pRCThread, nullptr, nullptr, pEvent->PrefetchCommonMemory.version, true);
+        break;
+    case DB_IPCE_PREFETCH_FIELD_MEMORY:
+        PrefetchFieldMemory(m_pRCThread, pEvent->PrefetchFieldMemory.version,
+            TypeHandle::FromTAddr(reinterpret_cast<TADDR>(pEvent->PrefetchFieldMemory.vmTypeHandle.GetRawPtr())),
+            pEvent->PrefetchFieldMemory.vmModule.GetRawPtr(), pEvent->PrefetchFieldMemory.typeDef);
+        break;
+    case DB_IPCE_PREFETCH_EVAL_RESULT_MEMORY:
+        PrefetchEvalResultMemory(m_pRCThread, pEvent->PrefetchEvalResultMemory.version,
+            pEvent->PrefetchEvalResultMemory.flags, pEvent->PrefetchEvalResultMemory.vmObjectHandle.GetRawPtr(),
+            pEvent->PrefetchEvalResultMemory.resultType);
+        break;
+    case DB_IPCE_PREFETCH_HANDLE_DEREFERENCE_MEMORY:
+        PrefetchHandleDereferenceMemory(m_pRCThread, pEvent->PrefetchHandleDereferenceMemory.version,
+            pEvent->PrefetchHandleDereferenceMemory.flags,
+            pEvent->PrefetchHandleDereferenceMemory.vmObjectHandle.GetRawPtr());
+        break;
+#endif
+
     case DB_IPCE_RELEASE_BUFFER:
         {
             SendReleaseBuffer(m_pRCThread, (CORDB_ADDRESS_TO_PTR(pEvent->ReleaseBuffer.pBuffer)));
@@ -10985,18 +11009,27 @@ bool Debugger::HandleIPCEvent(DebuggerIPCEvent * pEvent)
              OBJECTREF objref = ObjectToOBJECTREF(pObject);
              AppDomain * pAppDomain = pEvent->vmAppDomain.GetRawPtr();
              CorDebugHandleType handleType = pEvent->CreateHandle.handleType;
-             OBJECTHANDLE objectHandle;
+             UINT32 prefetchVersion = pEvent->CreateHandle.prefetchVersion;
+             UINT32 prefetchFlags = pEvent->CreateHandle.prefetchFlags;
+             OBJECTHANDLE objectHandle = nullptr;
 
              // This is a synchronous event (reply required)
              pEvent = m_pRCThread->GetIPCEventReceiveBuffer();
 
              InitIPCReply(pEvent, DB_IPCE_CREATE_HANDLE_RESULT);
+             memset(&pEvent->CreateHandleResult, 0, sizeof(pEvent->CreateHandleResult));
 
              {
                  // Handle creation may need to allocate memory.
                  // The API specifically limits the number of handls Cordbg can create,
                  // so we could preallocate and fail allocating anything beyond that.
                  CHECK_IF_CAN_TAKE_HELPER_LOCKS_IN_THIS_SCOPE(&(pEvent->hr), GetCanary());
+                 if (!DebuggerPrefetchProtocol::IsValidHandleRequest(prefetchVersion, prefetchFlags))
+                     pEvent->hr = E_INVALIDARG;
+#ifndef FEATURE_SINGLE_THREADED_DEBUGGER
+                 if (prefetchVersion != 0 && SUCCEEDED(pEvent->hr))
+                     pEvent->hr = E_NOTIMPL;
+#endif
 
                  if (SUCCEEDED(pEvent->hr))
                  {
@@ -11026,7 +11059,12 @@ bool Debugger::HandleIPCEvent(DebuggerIPCEvent * pEvent)
                  }
              }
 
-             m_pRCThread->SendIPCReply();
+#ifdef FEATURE_SINGLE_THREADED_DEBUGGER
+             if (SUCCEEDED(pEvent->hr) && prefetchFlags != 0)
+                 PrefetchHandleMemory(m_pRCThread, objectHandle, prefetchFlags);
+             else
+#endif
+                 m_pRCThread->SendIPCReply();
              break;
         }
 

@@ -153,11 +153,15 @@ HRESULT CordbAssembly::GetAppDomain(ICorDebugAppDomain **ppAppDomain)
 HRESULT CordbAssembly::EnumerateModules(ICorDebugModuleEnum **ppModules)
 {
     HRESULT hr = S_OK;
-    PUBLIC_API_BEGIN(this);
+    PUBLIC_API_NO_LOCK_BEGIN(this);
     {
+        RSLockHolder stopGoLock(GetProcess()->GetStopGoLock());
         ValidateOrThrow(ppModules);
         *ppModules = NULL;
 
+        GetProcess()->PrefetchCommonMemory();
+        RSLockHolder lockHolder(GetProcess()->GetProcessLock());
+        THROW_IF_NEUTERED(this);
         m_pAppDomain->PrepopulateModules();
 
         RSInitHolder<CordbEnumFilter> pModEnum(
@@ -282,4 +286,3 @@ HRESULT CordbAssembly::IsFullyTrusted( BOOL *pbFullyTrusted )
     *pbFullyTrusted = TRUE;
     return S_OK;
 }
-

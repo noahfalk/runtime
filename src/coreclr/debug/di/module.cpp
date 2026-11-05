@@ -1057,6 +1057,7 @@ void CordbModule::CopyRemoteMetaData(
     TargetBuffer buffer,
     VOID** pLocalBuffer)
 {
+    WASMDBG_API_TRACE_OBJECT(this, 6);
     CONTRACTL
     {
         THROWS;
@@ -1971,6 +1972,7 @@ CordbAssembly *CordbModule::GetCordbAssembly()
 HRESULT CordbModule::GetEditAndContinueSnapshot(
     ICorDebugEditAndContinueSnapshot **ppEditAndContinueSnapshot)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     return E_NOTIMPL;
 }
 
@@ -2704,6 +2706,7 @@ HRESULT CordbCode::QueryInterface(REFIID id, void ** pInterface)
 //-----------------------------------------------------------------------------
 HRESULT CordbCode::GetEnCRemapSequencePoints(ULONG32 cMap, ULONG32 * pcMap, ULONG32 offsets[])
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     FAIL_IF_NEUTERED(this);
     VALIDATE_POINTER_TO_OBJECT_OR_NULL(pcMap, ULONG32*);
     VALIDATE_POINTER_TO_OBJECT_ARRAY_OR_NULL(offsets, ULONG32*, cMap, true, true);
@@ -3222,6 +3225,7 @@ mdSignature CordbILCode::GetLocalVarSigToken()
 
 HRESULT CordbILCode::CreateNativeBreakpoint(ICorDebugFunctionBreakpoint **ppBreakpoint)
 {
+    WASMDBG_API_TRACE_OBJECT(nullptr, 0);
     FAIL_IF_NEUTERED(this);
     VALIDATE_POINTER_TO_OBJECT(ppBreakpoint, ICorDebugFunctionBreakpoint **);
 

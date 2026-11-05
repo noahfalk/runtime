@@ -149,6 +149,7 @@ internal sealed class TypeValidation
     // This portion of validation may throw if we are trying to read an invalid address in the target process
     private bool ValidateThrowing(NonValidatedMethodTable methodTable)
     {
+        using var profile = WasmDbgExactProfile.Measure(WasmDbgExactProfile.Part.ValidateRelations);
         // For non-generic classes, we can rely on comparing
         //    object->methodtable->class->methodtable
         // to
@@ -189,6 +190,7 @@ internal sealed class TypeValidation
 
     private bool ValidateMethodTableAdHoc(NonValidatedMethodTable methodTable)
     {
+        using var profile = WasmDbgExactProfile.Measure(WasmDbgExactProfile.Part.ValidateFlags);
         // ad-hoc checks; add more here as needed
         if (!methodTable.Flags.IsInterface && !methodTable.Flags.IsString)
         {
@@ -202,6 +204,8 @@ internal sealed class TypeValidation
 
     private static bool ValidateDataReadable<T>(Target target, TargetPointer dataAddress) where T : IData<T>
     {
+        using var profile = WasmDbgExactProfile.Measure(typeof(T) == typeof(Data.MethodTable)
+            ? WasmDbgExactProfile.Part.ReadMethodTable : WasmDbgExactProfile.Part.ReadEEClass);
         try
         {
             T dataClass = T.Create(target, dataAddress);
