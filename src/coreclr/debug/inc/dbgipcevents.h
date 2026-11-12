@@ -16,6 +16,7 @@
 #include <specstrings.h>
 
 #include "dbgtargetcontext.h"
+#include "prefetchprotocol.h"
 
 
 // Get version numbers for IPCHeader stamp
@@ -886,6 +887,25 @@ enum DebuggerIPCEventType
 #undef IPC_EVENT_TYPE0
 };
 
+inline bool IsReadOnlyPrefetchIPCEvent(DebuggerIPCEventType type)
+{
+    switch (type)
+    {
+        case DB_IPCE_PREFETCH_TYPE_MEMORY:
+        case DB_IPCE_PREFETCH_STACK_MEMORY:
+        case DB_IPCE_PREFETCH_COMMON_MEMORY:
+        case DB_IPCE_PREFETCH_FIELD_MEMORY:
+        case DB_IPCE_PREFETCH_OBJECT_FIELD_MEMORY:
+        case DB_IPCE_PREFETCH_EVAL_RESULT_MEMORY:
+        case DB_IPCE_PREFETCH_HANDLE_DEREFERENCE_MEMORY:
+        case DB_IPCE_PREFETCH_REFERENCE_DEREFERENCE_MEMORY:
+        case DB_IPCE_PREFETCH_FUNCTION_MEMORY:
+            return true;
+        default:
+            return false;
+    }
+}
+
 #ifdef _DEBUG
 
 // This is a static debugging structure to help breaking at the right place.
@@ -1304,6 +1324,18 @@ struct MSLAYOUT DebuggerIPCE_FuncEvalInfo
     Portable<UINT> arrayRank;
 };
 
+#include "funcevalbuffer.h"
+
+struct MSLAYOUT DebuggerFuncEvalBufferRequest
+{
+    uint32_t bytes;
+    uint32_t version;
+    uint64_t id;
+    uint32_t generation;
+    uint32_t dataBytes;
+    uint32_t flags;
+    DebuggerIPCE_FuncEvalInfo info;
+};
 
 //
 // Used in DebuggerIPCFirstChanceData. This tells the LS what action to take within the hijack
@@ -1658,6 +1690,15 @@ struct MSLAYOUT DebuggerIPCEvent
         struct MSLAYOUT
         {
             Portable<UINT32> version;
+            Portable<CORDB_ADDRESS> objectAddress;
+            Portable<UINT32> objectSize;
+            Portable<UINT32> snapshotSize;
+            BYTE snapshot[DebuggerPrefetchProtocol::MaximumObjectSnapshotSize];
+        } PrefetchObjectFieldMemory;
+
+        struct MSLAYOUT
+        {
+            Portable<UINT32> version;
             Portable<UINT32> flags;
             Portable<VMPTR_OBJECTHANDLE> vmObjectHandle;
             DebuggerIPCE_ExpandedTypeData resultType;
@@ -1669,6 +1710,21 @@ struct MSLAYOUT DebuggerIPCEvent
             Portable<UINT32> flags;
             Portable<VMPTR_OBJECTHANDLE> vmObjectHandle;
         } PrefetchHandleDereferenceMemory;
+
+        struct MSLAYOUT
+        {
+            Portable<UINT32> version;
+            Portable<UINT32> flags;
+            Portable<CORDB_ADDRESS> objectAddress;
+        } PrefetchReferenceDereferenceMemory;
+
+        struct MSLAYOUT
+        {
+            Portable<UINT32> version;
+            Portable<UINT32> flags;
+            Portable<VMPTR_Assembly> vmAssembly;
+            Portable<mdMethodDef> methodDef;
+        } PrefetchFunctionMemory;
 
         // Free a buffer allocated on the left-side with GetBuffer
         struct MSLAYOUT
@@ -1803,21 +1859,33 @@ struct MSLAYOUT DebuggerIPCEvent
 
             Portable<VMPTR_OBJECTHANDLE> vmObjectHandle;
             DebuggerIPCE_ExpandedTypeData resultType;
+            Portable<HRESULT> setupHr;
+            Portable<UINT32> bufferGeneration;
         } FuncEvalComplete;
 
         struct MSLAYOUT
         {
+            Portable<CORDB_ADDRESS> address;
+            Portable<UINT32> capacity;
+            Portable<UINT32> generation;
+        } FuncEvalBufferReady;
+
+        struct MSLAYOUT
+        {
             LSPTR_DEBUGGEREVAL debuggerEvalKey;
+            Portable<UINT64> bufferedEvalId;
         } FuncEvalAbort;
 
         struct MSLAYOUT
         {
             LSPTR_DEBUGGEREVAL debuggerEvalKey;
+            Portable<UINT64> bufferedEvalId;
         } FuncEvalRudeAbort;
 
         struct MSLAYOUT
         {
             LSPTR_DEBUGGEREVAL debuggerEvalKey;
+            Portable<UINT64> bufferedEvalId;
         } FuncEvalCleanup;
 
         struct MSLAYOUT

@@ -15,6 +15,7 @@
 #include "wasmdbgapitrace.h"
 
 #include <utilcode.h>
+#include <sarray.h>
 #include <minipal/mutex.h>
 #include "CLREventBase.h"
 #include "debugwait.h"
@@ -3452,8 +3453,11 @@ public:
             case DB_IPCE_PREFETCH_STACK_MEMORY:
             case DB_IPCE_PREFETCH_COMMON_MEMORY:
             case DB_IPCE_PREFETCH_FIELD_MEMORY:
+            case DB_IPCE_PREFETCH_OBJECT_FIELD_MEMORY:
             case DB_IPCE_PREFETCH_EVAL_RESULT_MEMORY:
             case DB_IPCE_PREFETCH_HANDLE_DEREFERENCE_MEMORY:
+            case DB_IPCE_PREFETCH_REFERENCE_DEREFERENCE_MEMORY:
+            case DB_IPCE_PREFETCH_FUNCTION_MEMORY:
             case DB_IPCE_GET_BUFFER:
             case DB_IPCE_RELEASE_BUFFER:
             case DB_IPCE_CREATE_HANDLE:
@@ -3474,8 +3478,14 @@ public:
     void PrefetchCommonMemory();
     bool PrefetchEvalResultMemory(VMPTR_OBJECTHANDLE handle, const DebuggerIPCE_ExpandedTypeData& type);
     void PrefetchHandleDereferenceMemory(VMPTR_OBJECTHANDLE handle);
-    UINT32 PrefetchHandleMemory(DebuggerIPCEvent* event, UINT32 requestedFlags);
+    void PrefetchReferenceDereferenceMemory(CORDB_ADDRESS objectAddress);
+    void PrefetchFunctionMemory(VMPTR_Assembly assembly, mdMethodDef token);
+    HRESULT QueueBufferedFuncEval(CordbEval* eval, DebuggerIPCEvent* event,
+        const void* types, UINT32 typeBytes, const void* data1, UINT32 bytes1,
+        const void* data2, UINT32 bytes2);
+    UINT32 PrefetchDependencyMemory(DebuggerIPCEvent* event, UINT32 requestedFlags);
     void PrefetchFieldMemory(CordbType* type);
+    void PrefetchObjectFieldMemory(CORDB_ADDRESS objectAddress, const BYTE* snapshot, SIZE_T objectSize);
     void ConfigureHandlePrefetch(DebuggerIPCEvent* event);
     void CacheHandlePrefetch(const DebuggerIPCEvent* event, UINT32 requestedFlags);
     void InvalidateCommonMemory();
@@ -3513,8 +3523,11 @@ public:
                  type == DB_IPCE_PREFETCH_STACK_MEMORY ||
                  type == DB_IPCE_PREFETCH_COMMON_MEMORY ||
                  type == DB_IPCE_PREFETCH_FIELD_MEMORY ||
+                 type == DB_IPCE_PREFETCH_OBJECT_FIELD_MEMORY ||
                  type == DB_IPCE_PREFETCH_EVAL_RESULT_MEMORY ||
                  type == DB_IPCE_PREFETCH_HANDLE_DEREFERENCE_MEMORY ||
+                 type == DB_IPCE_PREFETCH_REFERENCE_DEREFERENCE_MEMORY ||
+                 type == DB_IPCE_PREFETCH_FUNCTION_MEMORY ||
                  type == DB_IPCE_IS_TRANSITION_STUB ||
                  type == DB_IPCE_ATTACHING ||
                  type == DB_IPCE_APPLY_CHANGES ||
@@ -4162,6 +4175,11 @@ private:
     HModuleHolder             m_hDacModule;
     RSExtSmartPtr<ICorDebugDataTarget> m_pDACDataTarget;
     class PrefetchDataTarget* m_pPrefetchDataTarget = nullptr;
+    CORDB_ADDRESS m_funcEvalBufferStateAddress = 0;
+    DebuggerFuncEvalBuffer::State m_funcEvalBufferState{};
+    UINT32 m_funcEvalBufferWritten = 0;
+    UINT64 m_nextBufferedEvalId = 0;
+    CordbEval* m_pendingBufferedEval = nullptr;
 
     // The mutable version of the data target, or null if read-only
     RSExtSmartPtr<ICorDebugMutableDataTarget> m_pMutableDataTarget;
@@ -4848,6 +4866,10 @@ public:
     // These are available after Init() has been called....
     HRESULT GetUnboxedObjectSize(ULONG32 *res);
     HRESULT GetFieldInfo(mdFieldDef fldToken, FieldData ** ppFieldData);
+    static bool FullTypeInfoEnabled();
+    bool HasFullTypeInfo();
+    HRESULT EnsureFullTypeInfo(bool prefetch = true);
+    CordbType *GetResolvedFieldType(mdFieldDef fieldDef);
 
     CordbAppDomain *GetAppDomain() { return m_appdomain; }
 
@@ -4921,6 +4943,19 @@ private:
                                CordbType ** pResultType);
 
     BOOL                    m_fieldInfoNeedsInit;
+    struct ResolvedFieldType
+    {
+        mdFieldDef token;
+        CordbType *type;
+    };
+    SArray<ResolvedFieldType> m_resolvedFieldTypes;
+    RSSmartPtr<CordbType> m_fullInfoParent;
+    bool m_fullInfoReady = false;
+    UINT m_fullInfoVersion = 0;
+    UINT m_layoutInfoVersion = 0;
+    void ClearFullTypeInfo();
+    HRESULT InitBasicTypeInfo();
+    bool HasBasicTypeInfo();
 
 private:
     HRESULT InitInstantiationTypeHandle(BOOL fForceInit);
@@ -5016,6 +5051,9 @@ public:
         // This stage should be achievable as long as a runtime type handle
         // exists, even if it is unrestored
         BasicInfo,
+
+        // Field layout is available, but declared field types have not all been decoded.
+        LayoutInfo,
 
         //Everything is loaded, or at least anything created lazily from this
         //point on should be certain to succeed (ie m_type)
@@ -5115,7 +5153,7 @@ public:
 
     // If you want to force the init to happen even if we think the class
     // is up to date, set fForceInit to TRUE
-    void Init(ClassLoadLevel desiredLoadLevel = FullInfo);
+    void Init(ClassLoadLevel desiredLoadLevel = FullInfo, BOOL fForceInit = FALSE);
 
     // determine if any fields for a type are unallocated statics
     BOOL GotUnallocatedStatic(DacDbiArrayList<FieldData> * pFieldList);
@@ -5132,6 +5170,7 @@ public:
     void MakeOld()
     {
         m_loadLevel = Constructed;
+        ++m_infoVersion;
     }
 #endif // FEATURE_METADATA_UPDATER
 
@@ -5139,6 +5178,8 @@ public:
     // Data members
     //-----------------------------------------------------------
 private:
+    friend class CordbType;
+    UINT m_infoVersion = 0;
     // contains information about the type: size and
     // field information
     ClassInfo                m_classInfo;
@@ -5434,10 +5475,10 @@ protected:
     // Get the metadata token for the class to which a function belongs.
     mdTypeDef InitParentClassOfFunctionHelper(mdToken funcMetaDataToken);
 
-    // Get information about one of the native code blobs for this function
-    HRESULT InitNativeCodeInfo();
-
 public:
+
+    // Get information about one of the native code blobs for this function
+    HRESULT InitNativeCodeInfo(bool loadNativeInfo = false);
 
     // Get the class to which a given function belongs
     HRESULT InitParentClassOfFunction();
@@ -9400,6 +9441,7 @@ protected:
     BYTE *                   m_objectLocalVars; // var base in _this_ process
                                                 // points _into_ m_pObjectCopy
     BYTE *                   m_stringBuffer;    // points _into_ m_pObjectCopy
+    bool                     m_fieldValueAccessed = false;
 
     // remote location information
     RemoteValueHome          m_valueHome;
@@ -10151,6 +10193,10 @@ public:
 
     // Left-side memory that needs to be freed.
     LSPTR_DEBUGGEREVAL         m_debuggerEvalKey;
+    UINT64                    m_bufferedEvalId = 0;
+    HRESULT                   m_bufferedSetupHr = S_OK;
+    NewArrayHolder<BYTE>       m_bufferedRequest;
+    UINT32                    m_bufferedRequestSize = 0;
 
 
     // If we're evalling during a thread's exception, remember the info so that we can restore it when we're done.

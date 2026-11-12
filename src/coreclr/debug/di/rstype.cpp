@@ -92,6 +92,15 @@ HRESULT CordbType::GetStaticFieldValue(mdFieldDef fieldDef,
 
             IfFailThrow(hr);
 
+            if (FullTypeInfoEnabled() && !pFieldData->m_fFldIsCollectibleStatic &&
+                pFieldData->OkToGetOrSetStaticAddress() &&
+                pFieldData->GetStaticAddress() == (CORDB_ADDRESS)NULL)
+            {
+                IfFailThrow(InitInstantiationFieldInfo(TRUE));
+                // Refreshing replaces m_fieldList, so reacquire the field pointer.
+                IfFailThrow(GetFieldInfo(fieldDef, &pFieldData));
+            }
+
             hr = CordbClass::GetStaticFieldValue2(m_pClass->GetModule(),
                                                   pFieldData,
                                                   fSyncBlockField,
@@ -264,6 +273,7 @@ void CordbType::Neuter()
         m_inst.m_ppInst = NULL;
     }
     m_fieldList.Dealloc();
+    ClearFullTypeInfo();
 
     CordbBase::Neuter();
 }
@@ -1423,7 +1433,10 @@ HRESULT CordbType::Init(BOOL fForceInit)
 
     HRESULT hr = S_OK;
 
-    if (m_pClass && m_pClass->GetLoadLevel() != CordbClass::FullInfo)
+    if (m_pClass && (FullTypeInfoEnabled() ?
+        (m_pClass->GetLoadLevel() == CordbClass::Constructed ||
+            m_layoutInfoVersion != m_pClass->m_infoVersion) :
+        m_pClass->GetLoadLevel() != CordbClass::FullInfo))
         fForceInit = TRUE;
 
     // Step 1. initialize the type constructor (if one exists)
@@ -1722,6 +1735,11 @@ HRESULT CordbType::InitInstantiationFieldInfo(BOOL fForceInit)
 
             int fieldCount = (int)acc.items.Size();
             m_fieldList.Init(fieldCount > 0 ? &acc.items[0] : NULL, fieldCount);
+            if (FullTypeInfoEnabled())
+            {
+                m_fieldInfoNeedsInit = m_typeHandleExact.IsNull();
+                m_layoutInfoVersion = m_pClass->m_infoVersion;
+            }
         }
     }
     EX_CATCH_HRESULT(hr);
@@ -2540,30 +2558,164 @@ HRESULT CordbType::GetFieldInfo(mdFieldDef fldToken, FieldData ** ppFieldData)
 }
 
 
-//-----------------------------------------------------------------------------
-// Class is a class somewhere on the hierarchy for m_type.  Search for
-// a CordbType corresponding to the CordbClass, but which has the type-parameters
-// from the current CordbType.
-// In other words, instantiate a CordbType from baseClass, using the type-params
-// in the current Type.
-//
-// For example, given:
-//     class C<T>
-//     class D : C<int>
-// then if the CordbObjectValue is of type D and pClass is the class
-// for "C", then searching will set relevantType to C<int>.  This
-// type is then used to fetch fields from the object.
-//
-// Adds a reference to the resulting type.  Since this is for internal
-// use only we probably don't need todo this...
-//
-// Parameters:
-//   baseClass - open Type that needs to be instantiated with this CordbType's params.
-//   ppRes - OUT: out-parameter to get CordbType. ppRes->GetClass() should equal baseClass.
-//
-// Returns:
-//    S_OK on success. CORDBG_E_OBJECT_NEUTERED, CORDBG_E_CLASS_NOT_LOADED, E_INVALIDARG, OOM
-//-----------------------------------------------------------------------------
+bool CordbType::FullTypeInfoEnabled()
+{
+    static const bool enabled = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_WasmDbgFieldPrefetch) != 0;
+    return enabled;
+}
+
+void CordbType::ClearFullTypeInfo()
+{
+    m_fullInfoReady = false;
+    for (COUNT_T i = 0; i < m_resolvedFieldTypes.GetCount(); i++)
+        m_resolvedFieldTypes[i].type->Release();
+    m_resolvedFieldTypes.Clear();
+    m_fullInfoParent.Clear();
+}
+
+bool CordbType::HasFullTypeInfo()
+{
+    if (IsNeutered() || m_pClass == NULL || m_pClass->IsNeutered() ||
+        !m_fullInfoReady || m_fullInfoVersion != m_pClass->m_infoVersion ||
+        m_pClass->GetLoadLevel() < CordbClass::BasicInfo ||
+        (m_pClass->HasTypeParams() ? m_fieldInfoNeedsInit :
+            m_pClass->GetLoadLevel() < CordbClass::LayoutInfo))
+        return false;
+    for (COUNT_T i = 0; i < m_resolvedFieldTypes.GetCount(); i++)
+        if (!m_resolvedFieldTypes[i].type->HasBasicTypeInfo())
+            return false;
+    return m_fullInfoParent == NULL || m_fullInfoParent->HasFullTypeInfo();
+}
+
+bool CordbType::HasBasicTypeInfo()
+{
+    if (IsNeutered() ||
+        (m_pClass == NULL && (m_elementType == ELEMENT_TYPE_STRING || m_elementType == ELEMENT_TYPE_OBJECT)))
+        return false;
+    if (m_pClass != NULL)
+    {
+        if (m_pClass->IsNeutered() || m_pClass->GetLoadLevel() < CordbClass::BasicInfo)
+            return false;
+        if (m_elementType == ELEMENT_TYPE_CLASS && IsValueType() &&
+            (m_pClass->HasTypeParams() ?
+                (m_fieldInfoNeedsInit || m_layoutInfoVersion != m_pClass->m_infoVersion) :
+                m_pClass->GetLoadLevel() < CordbClass::LayoutInfo))
+            return false;
+    }
+    for (unsigned int i = 0; i < m_inst.m_cClassTyPars; i++)
+        if (!m_inst.m_ppInst[i]->HasBasicTypeInfo())
+            return false;
+    return true;
+}
+
+HRESULT CordbType::InitBasicTypeInfo()
+{
+    HRESULT hr = S_OK;
+    EX_TRY
+    {
+        if (m_elementType == ELEMENT_TYPE_STRING || m_elementType == ELEMENT_TYPE_OBJECT)
+            IfFailThrow(InitStringOrObjectClass(FALSE));
+        if (m_pClass != NULL)
+            m_pClass->Init(CordbClass::BasicInfo);
+        for (unsigned int i = 0; i < m_inst.m_cClassTyPars; i++)
+            IfFailThrow(m_inst.m_ppInst[i]->InitBasicTypeInfo());
+        if (m_elementType == ELEMENT_TYPE_CLASS && IsValueType())
+            IfFailThrow(Init(FALSE));
+    }
+    EX_CATCH_HRESULT(hr);
+    return hr;
+}
+
+HRESULT CordbType::EnsureFullTypeInfo(bool prefetch)
+{
+    if (!FullTypeInfoEnabled() || HasFullTypeInfo())
+        return S_OK;
+
+    HRESULT hr = S_OK;
+    EX_TRY
+    {
+#ifdef _WIN32
+        WasmDbgApiTrace trace("DBI::FullTypeInfo", this, 8);
+#endif
+        if (prefetch)
+            GetProcess()->PrefetchFieldMemory(this);
+        bool changed = m_pClass->GetLoadLevel() == CordbClass::Constructed ||
+            m_fullInfoVersion != m_pClass->m_infoVersion;
+        ClearFullTypeInfo();
+        if (changed)
+            m_fieldInfoNeedsInit = TRUE;
+        IfFailThrow(Init(FALSE));
+        m_fullInfoVersion = m_pClass->m_infoVersion;
+
+        bool complete = m_pClass->HasTypeParams() ? !m_fieldInfoNeedsInit :
+            m_pClass->GetLoadLevel() >= CordbClass::LayoutInfo;
+        DacDbiArrayList<FieldData>& fields = m_pClass->HasTypeParams() ?
+            m_fieldList : m_pClass->m_classInfo.m_fieldList;
+        for (unsigned int i = 0; i < fields.Count(); i++)
+        {
+            FieldData *field = &fields[i];
+            mdFieldDef fieldToken = field->m_fldMetadataToken;
+            SigParser signature;
+            HRESULT fieldHr = field->GetFieldSignature(m_pClass->GetModule(), &signature);
+            CordbType *fieldType = NULL;
+            if (SUCCEEDED(fieldHr))
+                fieldHr = SigToType(m_pClass->GetModule(), &signature, &m_inst, &fieldType);
+            if (SUCCEEDED(fieldHr))
+                fieldHr = fieldType->InitBasicTypeInfo();
+            // Unloaded declared types cannot be materialized by memory inspection.
+            if (fieldHr == CORDBG_E_CLASS_NOT_LOADED)
+            {
+                complete = false;
+                continue;
+            }
+            IfFailThrow(fieldHr);
+            complete &= fieldType->HasBasicTypeInfo();
+            ResolvedFieldType entry = { fieldToken, fieldType };
+            m_resolvedFieldTypes.Append(entry);
+            fieldType->AddRef();
+        }
+
+        RSExtSmartPtr<ICorDebugType> parent;
+        IfFailThrow(GetBase(&parent));
+        if (parent != NULL)
+        {
+            m_fullInfoParent.Assign(static_cast<CordbType *>(parent.GetValue()));
+            if (m_fullInfoParent->GetElementType() == ELEMENT_TYPE_CLASS)
+            {
+                HRESULT parentHr = m_fullInfoParent->EnsureFullTypeInfo(false);
+                IfFailThrow(parentHr);
+                complete &= parentHr == S_OK;
+            }
+            else
+            {
+                m_fullInfoParent.Clear();
+            }
+        }
+        m_fullInfoReady = complete;
+        if (complete && !m_pClass->HasTypeParams() &&
+            !m_pClass->GotUnallocatedStatic(&m_pClass->m_classInfo.m_fieldList))
+            m_pClass->m_loadLevel = CordbClass::FullInfo;
+        hr = complete ? S_OK : S_FALSE;
+#ifdef _WIN32
+        trace.SetResult(hr, m_resolvedFieldTypes.GetCount());
+#endif
+    }
+    EX_CATCH_HRESULT(hr);
+    return hr;
+}
+
+CordbType *CordbType::GetResolvedFieldType(mdFieldDef fieldDef)
+{
+    if (!HasFullTypeInfo())
+        return NULL;
+    for (COUNT_T i = 0; i < m_resolvedFieldTypes.GetCount(); i++)
+        if (m_resolvedFieldTypes[i].token == fieldDef)
+            return m_resolvedFieldTypes[i].type;
+    return NULL;
+}
+
+// Search the inheritance chain using this type's generic substitutions.
+// Adds a reference to the returned type.
 HRESULT CordbType::GetParentType(CordbClass *baseClass, CordbType **ppRes)
 {
     INTERNAL_SYNC_API_ENTRY(GetProcess()); //
@@ -2615,7 +2767,18 @@ HRESULT CordbType::GetParentType(CordbClass *baseClass, CordbType **ppRes)
 
         // OK, this is not the right class so look up the inheritance chain
         ICorDebugType *nextType = NULL;
-        if (FAILED(hr = res->GetBase(&nextType)))
+        if (FullTypeInfoEnabled() && res->HasFullTypeInfo())
+        {
+            nextType = res->m_fullInfoParent;
+            if (nextType != NULL)
+                nextType->AddRef();
+            hr = S_OK;
+        }
+        else
+        {
+            hr = res->GetBase(&nextType);
+        }
+        if (FAILED(hr))
         {
             res->Release();
             return hr;

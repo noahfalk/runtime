@@ -9101,7 +9101,7 @@ void CordbEval::Neuter()
     // or code:CordbEval::SendCleanup), unless the target is dead (terminated or about to exit).
     BOOL fTargetIsDead = !GetProcess()->IsSafeToSendEvents() || GetProcess()->m_exiting;
     (void)fTargetIsDead; //prevent "unused variable" error from GCC
-    _ASSERTE(fTargetIsDead || (m_debuggerEvalKey == NULL));
+    _ASSERTE(fTargetIsDead || (m_debuggerEvalKey == NULL && m_bufferedEvalId == 0));
 
     m_thread.Clear();
 
@@ -9117,7 +9117,7 @@ HRESULT CordbEval::SendCleanup()
 
     // Send a message to the left side to release the eval object over
     // there if one exists.
-    if ((m_debuggerEvalKey != NULL) &&
+    if ((m_debuggerEvalKey != NULL || m_bufferedEvalId != 0) &&
         GetProcess()->IsSafeToSendEvents())
     {
         // Call Abort() before doing new CallFunction()
@@ -9134,6 +9134,7 @@ HRESULT CordbEval::SendCleanup()
                                 m_thread->GetAppDomain()->GetADToken());
 
         event.FuncEvalCleanup.debuggerEvalKey = m_debuggerEvalKey;
+        event.FuncEvalCleanup.bufferedEvalId = m_bufferedEvalId;
 
         hr = GetProcess()->SendIPCEvent(&event, sizeof(DebuggerIPCEvent));
         IfFailRet(hr);
@@ -9145,6 +9146,7 @@ HRESULT CordbEval::SendCleanup()
 
         // Null out the key so we don't try to do this again.
         m_debuggerEvalKey = LSPTR_DEBUGGEREVAL::NullPtr();
+        m_bufferedEvalId = 0;
 
         hr = event.hr;
     }
@@ -9380,6 +9382,17 @@ HRESULT CordbEval::SendFuncEval(unsigned int genericArgsCount,
     // immediately and hence we cant do a SendCleanup(). Hence, we maintain
     // an extra ref-count to determine when this can be done.
     AddRef();
+
+    static const bool buffered = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_WasmDbgBufferedFuncEval) != 0;
+    if (buffered && GetProcess()->GetShim() == nullptr)
+    {
+        HRESULT bufferedHr = GetProcess()->QueueBufferedFuncEval(this, event, tyargData, tyargDataSize,
+            argData1, argData1Size, argData2, argData2Size);
+        delete[] tyargData;
+        if (FAILED(bufferedHr))
+            Release();
+        return bufferedHr;
+    }
 
     HRESULT hr = m_thread->GetProcess()->SendIPCEvent(event, sizeof(DebuggerIPCEvent));
 
@@ -10334,7 +10347,7 @@ CordbEval::Abort(
     //
     // Can't abort if its never even been started.
     //
-    if (m_debuggerEvalKey == NULL)
+    if (m_debuggerEvalKey == NULL && m_bufferedEvalId == 0)
     {
         return E_INVALIDARG;
     }
@@ -10352,7 +10365,14 @@ CordbEval::Abort(
                                          m_thread->GetAppDomain()->GetADToken()
                                         );
 
+    if (m_bufferedRequest != nullptr)
+    {
+        reinterpret_cast<DebuggerFuncEvalBufferRequest*>(m_bufferedRequest.GetValue())->flags |=
+            DebuggerFuncEvalBuffer::AbortRequested;
+        return S_OK;
+    }
     event.FuncEvalAbort.debuggerEvalKey = m_debuggerEvalKey;
+    event.FuncEvalAbort.bufferedEvalId = m_bufferedEvalId;
 
     HRESULT hr = m_thread->GetProcess()->SendIPCEvent(&event,
                                                       sizeof(DebuggerIPCEvent)
@@ -10389,6 +10409,9 @@ HRESULT CordbEval::GetResult(ICorDebugValue **ppResult)
     ATT_REQUIRE_STOPPED_MAY_FAIL(GetProcess());
 
     *ppResult = NULL;
+
+    if (FAILED(m_bufferedSetupHr))
+        return m_bufferedSetupHr;
 
     // Is the evaluation complete?
     if (!m_complete)
@@ -10690,7 +10713,7 @@ CordbEval::RudeAbort(
     //
     // Can't abort if its never even been started.
     //
-    if (m_debuggerEvalKey == NULL)
+    if (m_debuggerEvalKey == NULL && m_bufferedEvalId == 0)
     {
         return E_INVALIDARG;
     }
@@ -10708,7 +10731,14 @@ CordbEval::RudeAbort(
                                          m_thread->GetAppDomain()->GetADToken()
                                         );
 
+    if (m_bufferedRequest != nullptr)
+    {
+        reinterpret_cast<DebuggerFuncEvalBufferRequest*>(m_bufferedRequest.GetValue())->flags |=
+            DebuggerFuncEvalBuffer::AbortRequested;
+        return S_OK;
+    }
     event.FuncEvalRudeAbort.debuggerEvalKey = m_debuggerEvalKey;
+    event.FuncEvalRudeAbort.bufferedEvalId = m_bufferedEvalId;
 
     HRESULT hr = m_thread->GetProcess()->SendIPCEvent(&event,
                                                       sizeof(DebuggerIPCEvent)

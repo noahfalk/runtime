@@ -608,6 +608,11 @@ instance/string copy. Arrays use their existing bounds-only collection;
 boxes defer their copies. Instance bytes use the remaining reply budget
 and oversized suffixes retain demand reads.
 
+The shared object-handle collector also snapshots the continuation MethodTable
+and singleton EEClass globals used by cDAC's `GetBasicObjectInfo` class expansion.
+This covers the classification check even when neither global currently holds
+a continuation type; CreateHandle and GetResult replies benefit as well.
+
 GetResult no longer collects dereference-only memory. Its earlier snapshot
 still covers declared-type decoding and handle initialization; the later
 request cannot cover these preceding DAC calls. Both requests share bounded
@@ -615,6 +620,56 @@ collection/reply-validation plumbing and the inline `0x0167` response.
 No sync block is created, handle ownership is unchanged, and no snapshot is
 kept across Continue/DAC flush. This lets retained handles obtain fresh
 memory at the stop where they are actually dereferenced.
+
+### Function-code prefetch
+
+With explicit prefetch enabled, opt-in `DOTNET_WASMDBG_FUNCTION_PREFETCH=1`
+adds `DB_IPCE_PREFETCH_FUNCTION_MEMORY` (`0x0262`) to
+`ICorDebugModule::GetFunctionFromToken`, only when the latest-version function
+is not already cached. Token validation and the cache check run under the
+process lock; the IPC runs outside it. It snapshots method-definition lookup
+entries, loaded method/type/module dependencies, native-code slots and portable entry points,
+interpreter code-range/header/debug data, and the IL body/EH sections.
+Existing async-variant dependencies are included without loading or compiling
+a method. Metadata images are excluded; cold cDAC metadata lookups retain
+ordinary demand reads.
+
+The request shares the bounded inline `0x0167` reply, validation, optional
+common prefix, and volatile cache with object dependency snapshots. It does
+not preserve mutable function-specific memory across Continue/DAC flush.
+Oversized IL or dynamic-IL tables produce a partial snapshot (`S_FALSE`);
+uncovered bytes retain demand reads.
+Errors are propagated, and the feature is disabled by default.
+Deploy matching DBI/runtime/native Concord and account for prefetch cost
+inside `GetFunctionFromToken`, not only savings in subsequent code queries.
+
+### Buffered function-evaluation setup
+
+Default-off `DOTNET_WASMDBG_BUFFERED_FUNC_EVAL=1` replaces eager setup IPC
+with a preallocated 4-KiB mailbox on the single-threaded WASM path. It requires
+matching DBI, cDAC, runtime and proxy. The optional `IDacDbiFuncEvalBuffer`
+interface discovers `FuncEvalBuffer` in the target descriptor and performs
+abort/stopped-context preflight without changing the existing DAC interface
+vtable. Runtime setup validation remains authoritative.
+
+Each aligned record contains length/version/ID/generation, flags, setup info
+and inline type/argument data, followed by a zero-length sentinel. DBI normally
+publishes all bytes in one memory write while paused. The proxy observes
+pending intent in that write's existing browser evaluation. No setup IPC or
+separate type/value writes are needed.
+
+Resume preserves the interpreter's managed stopped context before it is
+removed on breakpoint return. Pending-eval processing temporarily restores
+it, validates and consumes the record, and queues an ordinary `DebuggerEval`.
+Completion resets a drained buffer and carries its new generation in the
+existing event. IDs support cleanup, active abort and cancellation before
+materialization. Array dimensions use the WASM32 width, not the DBI host width.
+
+Insufficient space uses a separate requested-capacity global. Pending
+processing allocates, sends `0x0168` with the new buffer address/capacity and
+stops. DBI writes its deferred record and continues. Capacity is bounded to
+8 MiB; errors propagate. The prototype is not a concurrent/multi-threaded
+queue, and the large-request path intentionally needs extra transitions.
 
 ## Process-control interface
 

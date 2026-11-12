@@ -1700,6 +1700,42 @@ public unsafe class DacDbiImplTests
     }
 
     [Theory]
+    [InlineData(0, 0, 0, 0, unchecked((int)0x80131c23))]
+    [InlineData(0, 0x90000, 0, 0, 0)]
+    [InlineData(1, 0x90000, 0, 0, unchecked((int)0x80131313))]
+    [InlineData(0, 0x90000, 1, 0, unchecked((int)0x80131c23))]
+    [InlineData(0, 0, 0, 1, 0)]
+    [InlineData(1, 0, 0, 1, unchecked((int)0x80131313))]
+    public void BufferedFuncEval_ValidatesStoppedThread(uint state, ulong context, byte hijacked,
+        int duringException, int expected)
+    {
+        var (dacDbi, thread, _) = CreateManagedStoppedContextDacDbi(
+            new() { IsLittleEndian = true, Is64Bit = false });
+        thread.State = state;
+        thread.DebuggerFilterContext = context;
+        thread.InteropDebuggingHijacked = hijacked;
+
+        Assert.Equal(expected, dacDbi.ValidateFuncEval(thread.Address, duringException));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void BufferedFuncEval_DiscoversOptionalBuffer(bool present)
+    {
+        TestPlaceholderTarget.Builder builder = new(new() { IsLittleEndian = true, Is64Bit = false });
+        if (present)
+            builder.AddGlobals(("FuncEvalBuffer", 0x1000UL));
+        DacDbiImpl dacDbi = new(builder.Build(), legacyObj: null, new());
+        ulong address = ulong.MaxValue;
+
+        Assert.Equal(present ? System.HResults.S_OK : System.HResults.E_NOTIMPL,
+            dacDbi.GetBufferStateAddress(&address));
+        Assert.Equal(present ? 0x1000UL : 0UL, address);
+        Assert.Equal(System.HResults.E_INVALIDARG, dacDbi.GetBufferStateAddress(null));
+    }
+
+    [Theory]
     [ClassData(typeof(MockTarget.StdArch))]
     public void GetManagedStoppedContext_InteropDebuggingHijacked(MockTarget.Architecture arch)
     {
@@ -1743,6 +1779,7 @@ public unsafe class DacDbiImplTests
         int hr = dacDbi.GetManagedStoppedContext(thread.Address, &retVal);
         Assert.Equal(System.HResults.S_OK, hr);
         Assert.Equal(contextAddr, retVal);
+        Assert.Equal(System.HResults.S_OK, dacDbi.ValidateFuncEval(thread.Address, 0));
     }
 
     [Theory]

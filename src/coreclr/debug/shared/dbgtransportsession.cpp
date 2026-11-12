@@ -3161,6 +3161,10 @@ DWORD DbgTransportSession::GetEventSize(DebuggerIPCEvent *pEvent)
         cbAdditionalSize = sizeof(pEvent->FuncEvalComplete);
         break;
 
+    case DB_IPCE_FUNC_EVAL_BUFFER_READY:
+        cbAdditionalSize = sizeof(pEvent->FuncEvalBufferReady);
+        break;
+
     case DB_IPCE_SET_REFERENCE_RESULT:
         cbAdditionalSize = sizeof(pEvent->SetReference);
         break;
@@ -3255,11 +3259,20 @@ DWORD DbgTransportSession::GetEventSize(DebuggerIPCEvent *pEvent)
     case DB_IPCE_PREFETCH_FIELD_MEMORY:
         cbAdditionalSize = sizeof(pEvent->PrefetchFieldMemory);
         break;
+    case DB_IPCE_PREFETCH_OBJECT_FIELD_MEMORY:
+        cbAdditionalSize = sizeof(pEvent->PrefetchObjectFieldMemory);
+        break;
     case DB_IPCE_PREFETCH_EVAL_RESULT_MEMORY:
         cbAdditionalSize = sizeof(pEvent->PrefetchEvalResultMemory);
         break;
     case DB_IPCE_PREFETCH_HANDLE_DEREFERENCE_MEMORY:
         cbAdditionalSize = sizeof(pEvent->PrefetchHandleDereferenceMemory);
+        break;
+    case DB_IPCE_PREFETCH_REFERENCE_DEREFERENCE_MEMORY:
+        cbAdditionalSize = sizeof(pEvent->PrefetchReferenceDereferenceMemory);
+        break;
+    case DB_IPCE_PREFETCH_FUNCTION_MEMORY:
+        cbAdditionalSize = sizeof(pEvent->PrefetchFunctionMemory);
         break;
 
     case DB_IPCE_RELEASE_BUFFER:

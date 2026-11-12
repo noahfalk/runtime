@@ -1720,6 +1720,9 @@ CDAC_GLOBAL_POINTER(EEConfig, &::g_pConfig)
 #ifndef FEATURE_PORTABLE_ENTRYPOINTS
 CDAC_GLOBAL_POINTER(ThePreStub, &g_cdacThePreStub)
 #endif // !FEATURE_PORTABLE_ENTRYPOINTS
+#ifdef FEATURE_SINGLE_THREADED_DEBUGGER
+CDAC_GLOBAL_POINTER(FuncEvalBuffer, &::g_debuggerFuncEvalBuffer)
+#endif
 #if defined(DEBUGGING_SUPPORTED) && !defined(TARGET_WASM)
 CDAC_GLOBAL_POINTER(Debugger, &::g_pDebugger)
 #if defined(TARGET_AMD64)

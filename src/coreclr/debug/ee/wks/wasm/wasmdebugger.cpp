@@ -54,7 +54,7 @@ public:
     WasmMemoryCollector() : m_heapSize(emscripten_get_heap_size())
     {
     }
-    void Add(const void* pointer, size_t size)
+    void Add(const volatile void* pointer, size_t size)
     {
         if (size == 0) return;
         size_t address = reinterpret_cast<size_t>(pointer);
@@ -87,6 +87,13 @@ public:
         Add(klass->GetMethodTable(), sizeof(MethodTable));
         Add(klass->GetMethodTable()->GetClass(), sizeof(EEClass));
         Add(mt->GetAuxiliaryData(), sizeof(MethodTableAuxiliaryData));
+        Module* module = mt->GetModule();
+        AddLoaderMemory(module);
+        mdTypeDef token = mt->GetCl();
+        if (!IsNilToken(token))
+            AddTypeTokenMap(module, token);
+        if (handle.GetLoadLevel() == CLASS_LOADED)
+            AddFieldLayout(mt);
         if (!instantiate || !mt->HasInstantiation()) return;
         Add(mt->GetGenericsDictInfo(), sizeof(GenericsDictInfo));
         Add(mt->GetPerInstInfo(), mt->GetNumDicts() * sizeof(void*));
@@ -96,20 +103,79 @@ public:
             AddType(inst[i], false);
     }
     UINT32 Count() const { return static_cast<UINT32>(m_lines.GetCount()); }
-    void AddObjectHandle(OBJECTHANDLE handle)
+    bool AddBounded(const void* pointer, size_t size)
+    {
+        size_t budget = (DebuggerPrefetchProtocol::MaximumLines - Count()) *
+            DebuggerPrefetchProtocol::LineSize;
+        size_t offset = reinterpret_cast<size_t>(pointer) & (DebuggerPrefetchProtocol::LineSize - 1);
+        size_t copied = budget > offset ? min(size, budget - offset) : 0;
+        Add(pointer, copied);
+        return copied == size;
+    }
+    Object* AddObjectHandle(OBJECTHANDLE handle)
     {
         Add(handle, sizeof(*handle));
         Object* object = OBJECTREFToObject(ObjectFromHandle(handle));
+        AddObject(object);
+        return object;
+    }
+    void AddObject(Object* object)
+    {
         if (object == nullptr)
             return;
+        Add(object, sizeof(Object));
         MethodTable* mt = object->GetMethodTable();
+        Add(mt, sizeof(MethodTable));
         Add(object, mt->IsArray() ? ArrayBase::GetDataPtrOffset(mt) :
             mt->IsString() ? sizeof(StringObject) : sizeof(Object));
         Add(&g_pStringClass, sizeof(g_pStringClass));
         Add(&g_pObjectClass, sizeof(g_pObjectClass));
         Add(&g_pFreeObjectMethodTable, sizeof(g_pFreeObjectMethodTable));
+        // GetBasicObjectInfo checks continuation classification when expanding class types.
+        Add(&g_pContinuationClassIfSubTypeCreated, sizeof(g_pContinuationClassIfSubTypeCreated));
+        Add(&g_singletonContinuationEEClass, sizeof(g_singletonContinuationEEClass));
 
         AddTypeGraph(TypeHandle(mt));
+    }
+    bool AddObjectFieldMemory(Object* object, UINT32 objectSize, UINT32 snapshotSize, const BYTE* snapshot)
+    {
+        Add(object, sizeof(Object));
+        MethodTable* mt = object->GetMethodTable();
+        Add(mt, sizeof(MethodTable));
+        TADDR snapshotTable;
+        memcpy(&snapshotTable, snapshot, sizeof(snapshotTable));
+        if (snapshotTable != reinterpret_cast<TADDR>(mt) || mt->IsArray() || object->GetSize() != objectSize)
+            ThrowHR(E_INVALIDARG);
+        bool complete = true;
+        if (!mt->ContainsGCPointers())
+            return complete;
+
+        // GC series also identify references inside inline structs and inherited fields.
+        CGCDesc* descriptor = CGCDesc::GetCGCDescFromMT(mt);
+        size_t count = descriptor->GetNumSeries();
+        if (count == 0 || count > objectSize / sizeof(Object*))
+            ThrowHR(E_INVALIDARG);
+        CGCDescSeries* series = descriptor->GetHighestSeries();
+        for (size_t i = 0; i < count; i++, series--)
+        {
+            size_t offset = series->GetSeriesOffset();
+            size_t bytes = series->GetSeriesSize() + objectSize;
+            if (offset < sizeof(Object) || offset > objectSize || bytes > objectSize - offset ||
+                bytes % sizeof(Object*) != 0)
+                ThrowHR(E_INVALIDARG);
+            for (size_t position = offset; position < offset + bytes; position += sizeof(Object*))
+            {
+                if (position > snapshotSize || sizeof(Object*) > snapshotSize - position)
+                {
+                    complete = false;
+                    break;
+                }
+                Object* referent;
+                memcpy(&referent, snapshot + position, sizeof(referent));
+                AddObject(referent);
+            }
+        }
+        return complete;
     }
     void AddTypeGraph(TypeHandle root)
     {
@@ -127,6 +193,15 @@ public:
             {
                 MethodTable* table = type.AsMethodTable();
                 AddStackModule(table->GetModule());
+                mdTypeDef token = table->GetCl();
+                if (!IsNilToken(token))
+                {
+                    // Class initialization resolves the definition, not the closed instantiation.
+                    TypeHandle definition = table->GetModule()->LookupTypeDef(token);
+                    if (!definition.IsNull() && definition.GetLoadLevel() == CLASS_LOADED &&
+                        !seenTypes.Contains(definition.AsTAddr()))
+                        types.Append(definition);
+                }
                 MethodTable* parent = table->GetParentMethodTable();
                 if (parent != nullptr)
                     types.Append(TypeHandle(parent));
@@ -193,15 +268,14 @@ public:
         }
     }
 
-    void AddObjectDereferenceMemory(OBJECTHANDLE handle)
+    bool AddObjectDereferenceMemory(Object* object)
     {
-        Object* object = OBJECTREFToObject(ObjectFromHandle(handle));
         if (object == nullptr)
-            return;
+            return true;
         MethodTable* mt = object->GetMethodTable();
         // Arrays initialize only their bounds; boxes defer copying their contents.
         if (mt->IsArray() || mt->IsValueType())
-            return;
+            return true;
         if (!mt->IsString())
         {
             Add(&g_pExceptionClass, sizeof(g_pExceptionClass));
@@ -218,13 +292,32 @@ public:
             }
         }
 
-        // Object/string values copy the instance. Keep large results within the
-        // existing reply budget; bytes outside the snapshot remain demand reads.
-        size_t budget = (DebuggerPrefetchProtocol::MaximumLines - Count()) *
-            size_t(DebuggerPrefetchProtocol::LineSize);
-        size_t offset = reinterpret_cast<size_t>(object) & (DebuggerPrefetchProtocol::LineSize - 1);
-        if (budget > offset)
-            Add(object, min(object->GetSize(), budget - offset));
+        bool complete = !mt->IsDelegate() || AddDelegateFunctionMemory(static_cast<DelegateObject*>(object));
+        // Leave oversized instance suffixes to demand reads, after reserving dependencies.
+        return AddBounded(object, object->GetSize()) && complete;
+    }
+
+    bool AddDelegateFunctionMemory(DelegateObject* object)
+    {
+        Object* helper = OBJECTREFToObject(object->GetHelperObject());
+        if (helper != nullptr)
+            AddObject(helper);
+        if ((helper != nullptr && helper->GetMethodTable()->IsArray()) ||
+            object->GetExtraData() == DELEGATE_MARKER_UNMANAGEDFPTR)
+            return true;
+
+        PCODE entry = object->GetMethodPtrAux();
+        if (entry == 0)
+            entry = object->GetMethodPtr();
+        if (entry == 0)
+            return false;
+        Add(PortableEntryPoint::ToPortableEntryPoint(entry), sizeof(PortableEntryPoint));
+        MethodDesc* method = NonVirtualEntry2MethodDesc(entry);
+        if (method == nullptr)
+            return false;
+        AddStackMethod(method);
+        AddTypeGraph(TypeHandle(method->GetMethodTable()));
+        return method->IsDynamicMethod() || AddFunctionMemory(method->GetModule(), method->GetMemberDef());
     }
 
     void AddLoaderMemory(Module* module)
@@ -245,14 +338,9 @@ public:
         for (FieldDesc* field = fields.Next(); field != nullptr; field = fields.Next())
             Add(field, sizeof(*field));
     }
-    void AddTypeToken(Module* module, mdToken token)
+    void AddTypeTokenMap(Module* module, mdToken token)
     {
-        AddLoaderMemory(module);
-        if (TypeFromToken(token) != mdtTypeDef && TypeFromToken(token) != mdtTypeRef)
-        {
-            m_fieldsComplete = false;
-            return;
-        }
+        _ASSERTE(TypeFromToken(token) == mdtTypeDef || TypeFromToken(token) == mdtTypeRef);
         size_t offset = TypeFromToken(token) == mdtTypeDef ?
             cdac_data<Module>::TypeDefToMethodTableMap : cdac_data<Module>::TypeRefToMethodTableMap;
         DWORD rid = RidFromToken(token);
@@ -269,14 +357,22 @@ public:
             }
             rid -= map->dwCount;
         }
+    }
+    void AddTypeToken(Module* module, mdToken token)
+    {
+        AddLoaderMemory(module);
+        if (TypeFromToken(token) != mdtTypeDef && TypeFromToken(token) != mdtTypeRef)
+        {
+            m_fieldsComplete = false;
+            return;
+        }
+        AddTypeTokenMap(module, token);
         TypeHandle definition = TypeFromToken(token) == mdtTypeDef ?
             module->LookupTypeDef(token) : module->LookupTypeRef(token);
         if (!definition.IsNull() && definition.GetLoadLevel() == CLASS_LOADED)
         {
             // DBI also asks about the uninstantiated definition, not just its closed field type.
             AddTypeGraph(definition);
-            if (!definition.IsTypeDesc())
-                AddFieldLayout(definition.AsMethodTable());
         }
     }
     void AddFieldLookup(const TypeKey& key)
@@ -307,6 +403,9 @@ public:
         {
             MethodTable* mt = type.AsMethodTable();
             AddTypeToken(mt->GetModule(), mt->GetCl());
+            // Init visits generic arguments, and BasicInfo for value types needs their layout.
+            if (type.GetLoadLevel() == CLASS_LOADED)
+                AddFieldLayout(mt);
             Instantiation inst = mt->GetInstantiation();
             for (DWORD i = 0; i < inst.GetNumArgs(); i++)
                 AddFieldType(inst[i], depth + 1);
@@ -423,11 +522,29 @@ public:
             AddFieldType(TypeHandle(mt));
             AddFieldLayout(mt);
             SigTypeContext context(mt->GetInstantiation(), Instantiation());
+            Module* typeModule = mt->GetModule();
+            mdToken extends;
+            IfFailThrow(typeModule->GetMDImport()->GetTypeDefProps(mt->GetCl(), nullptr, &extends));
+            if (!IsNilToken(extends))
+            {
+                if (TypeFromToken(extends) == mdtTypeSpec)
+                {
+                    PCCOR_SIGNATURE bytes;
+                    ULONG size;
+                    IfFailThrow(typeModule->GetMDImport()->GetTypeSpecFromToken(extends, &bytes, &size));
+                    Add(bytes, size);
+                    SigPointer signature(bytes, size);
+                    AddFieldSignature(signature, typeModule, context);
+                }
+                else
+                {
+                    AddTypeToken(typeModule, extends);
+                }
+            }
             ApproxFieldDescIterator fields(mt, ApproxFieldDescIterator::ALL_FIELDS);
             for (FieldDesc* field = fields.Next(); field != nullptr; field = fields.Next())
             {
                 Add(field, sizeof(*field));
-                if (field->IsStatic()) continue;
                 PCCOR_SIGNATURE bytes;
                 DWORD size;
                 field->GetSig(&bytes, &size);
@@ -445,6 +562,7 @@ public:
     void AddCommonMemory()
     {
         _ASSERTE(g_pDebugger->IsStopped());
+        Add(&g_debuggerFuncEvalBuffer, sizeof(g_debuggerFuncEvalBuffer));
         Add(cdac_data<AppDomain>::AppDomainAddress, sizeof(PTR_AppDomain));
         Add(&g_cdacPlatformMetadata, sizeof(g_cdacPlatformMetadata));
         AddFunctionTableRanges();
@@ -633,8 +751,36 @@ public:
             TADDR transition = interpreter->GetTransitionBlock();
             if (transition != 0)
                 Add(reinterpret_cast<void*>(transition), sizeof(TransitionBlock));
-            for (InterpMethodContextFrame* current = interpreter->GetTopInterpMethodContextFrame();
-                current != nullptr; current = current->pParent)
+            // cDAC resolves the saved hint itself, including inactive frames skipped by GetTopInterpMethodContextFrame.
+            InterpMethodContextFrame* top = *reinterpret_cast<InterpMethodContextFrame**>(
+                reinterpret_cast<BYTE*>(interpreter) + cdac_data<InterpreterFrame>::TopInterpMethodContextFrame);
+            if (top != nullptr)
+            {
+                if (++visited > 4096) ThrowHR(E_INVALIDARG);
+                Add(top, sizeof(*top));
+                if (top->ip != nullptr)
+                {
+                    while (top->pNext != nullptr)
+                    {
+                        InterpMethodContextFrame* next = top->pNext;
+                        if (++visited > 4096) ThrowHR(E_INVALIDARG);
+                        Add(next, sizeof(*next));
+                        if (next->ip == nullptr)
+                            break;
+                        top = next;
+                    }
+                }
+                else
+                {
+                    while (top->pParent != nullptr && top->ip == nullptr)
+                    {
+                        top = top->pParent;
+                        if (++visited > 4096) ThrowHR(E_INVALIDARG);
+                        Add(top, sizeof(*top));
+                    }
+                }
+            }
+            for (InterpMethodContextFrame* current = top; current != nullptr; current = current->pParent)
             {
                 if (++visited > 4096) ThrowHR(E_INVALIDARG);
                 Add(current, sizeof(*current));
@@ -699,6 +845,13 @@ public:
         PCODE entry = md->GetTemporaryEntryPointIfExists();
         if (entry != 0)
             Add(PortableEntryPoint::ToPortableEntryPoint(entry), sizeof(PortableEntryPoint));
+        // cDAC validates the native-code slot even when it is a portable entry point with no code range.
+        if (!md->IsFCall())
+        {
+            PCODE nativeCode = md->GetNativeCode();
+            if (nativeCode != 0)
+                AddCodeLookup(nativeCode);
+        }
         MethodTable* mt = md->GetMethodTable();
         AddType(TypeHandle(mt), true);
         Add(mt->GetVtableIndirections(), mt->GetNumVtableIndirections() * sizeof(PTR_PCODE));
@@ -719,6 +872,89 @@ public:
         for (DWORD i = 0; i < inst.GetNumArgs(); i++)
             AddType(inst[i], false);
         AddStackModule(md->GetModule());
+    }
+    bool AddFunctionMemory(Module* module, mdMethodDef token)
+    {
+        AddLoaderMemory(module);
+        Add(&g_pFreeObjectMethodTable, sizeof(g_pFreeObjectMethodTable));
+        AddFunctionTableRanges();
+        bool complete = true;
+        DWORD rid = RidFromToken(token);
+        UINT32 visited = 0;
+        for (LookupMapBase* map = module->GetMethodDefToDescMap(); map != nullptr; map = map->pNext)
+        {
+            if (++visited > 4096) ThrowHR(E_INVALIDARG);
+            Add(map, sizeof(*map));
+            if (rid < map->dwCount)
+            {
+                Add(map->GetIndexPtr(rid), sizeof(TADDR));
+                break;
+            }
+            rid -= map->dwCount;
+        }
+
+        MethodDesc* method = module->LookupMethodDef(token);
+        if (method != nullptr)
+        {
+            AddStackMethod(method);
+            if (method->IsAsyncThunkMethod())
+            {
+                MethodTable::IntroducedMethodIterator methods(method->GetMethodTable()->GetCanonicalMethodTable());
+                UINT32 count = 0;
+                for (; methods.IsValid(); methods.Next())
+                {
+                    if (++count > 4096) ThrowHR(E_INVALIDARG);
+                    MethodDesc* candidate = methods.GetMethodDesc();
+                    Add(candidate->GetMethodDescChunk(), candidate->GetMethodDescChunk()->SizeOf());
+                }
+                MethodDesc* variant = method->GetAsyncVariantNoCreate();
+                if (variant != nullptr)
+                {
+                    method = variant;
+                    AddStackMethod(method);
+                }
+            }
+            if (method->HasNativeCodeSlot())
+                Add(method->GetAddrOfNativeCodeSlot(), sizeof(PCODE));
+            PCODE entry = method->GetNativeCode();
+            if (entry != 0)
+            {
+                AddCodeLookup(entry);
+                if (ExecutionManager::FindCodeRange(entry, ExecutionManager::GetScanFlags()) == nullptr)
+                    Add(PortableEntryPoint::ToPortableEntryPoint(entry), sizeof(PortableEntryPoint));
+                AddStackCode(static_cast<PCODE>(GetInterpreterCodeFromEntryPointIfPresent(entry)));
+            }
+        }
+
+        auto dynamicIL = *reinterpret_cast<DynamicILBlobTable**>(
+            reinterpret_cast<BYTE*>(module) + cdac_data<Module>::DynamicILBlobTable);
+        if (dynamicIL != nullptr)
+        {
+            Add(dynamicIL, sizeof(*dynamicIL));
+            auto entries = *reinterpret_cast<DynamicILBlobEntry**>(
+                reinterpret_cast<BYTE*>(dynamicIL) + cdac_data<DynamicILBlobTable>::Table);
+            UINT32 count = *reinterpret_cast<UINT32*>(
+                reinterpret_cast<BYTE*>(dynamicIL) + cdac_data<DynamicILBlobTable>::TableSize);
+            complete = AddBounded(entries, static_cast<size_t>(count) * sizeof(*entries));
+        }
+
+        // Include the complete IL body and EH sections, not only its header.
+        COR_ILMETHOD* il = reinterpret_cast<COR_ILMETHOD*>(module->GetDynamicIL(token));
+        if (il == nullptr)
+        {
+            DWORD rva = 0, flags = 0;
+            IfFailThrow(module->GetMDImport()->GetMethodImplProps(token, &rva, &flags));
+            if (rva != 0 && IsMiIL(flags))
+                il = reinterpret_cast<COR_ILMETHOD*>(module->GetIL(rva));
+        }
+        if (il != nullptr)
+        {
+            COR_ILMETHOD_DECODER decoder(il);
+            int size = decoder.GetOnDiskSize(il);
+            if (size <= 0) ThrowHR(E_INVALIDARG);
+            return AddBounded(il, static_cast<size_t>(size)) && complete;
+        }
+        return complete;
     }
     void Copy(BYTE* buffer)
     {
@@ -818,20 +1054,8 @@ HRESULT Debugger::PrefetchFieldMemory(DebuggerRCThread* rcThread, UINT32 version
         event->PrefetchTypeMemory.payloadSize);
 }
 
-HRESULT Debugger::PrefetchEvalResultMemory(DebuggerRCThread* rcThread, UINT32 version, UINT32 flags,
-                                         OBJECTHANDLE handle, DebuggerIPCE_ExpandedTypeData resultType)
-{
-    return PrefetchObjectHandleMemory(rcThread, version, flags, handle, &resultType);
-}
-
-HRESULT Debugger::PrefetchHandleDereferenceMemory(DebuggerRCThread* rcThread, UINT32 version, UINT32 flags,
-                                                OBJECTHANDLE handle)
-{
-    return PrefetchObjectHandleMemory(rcThread, version, flags, handle, nullptr);
-}
-
-HRESULT Debugger::PrefetchObjectHandleMemory(DebuggerRCThread* rcThread, UINT32 version, UINT32 flags,
-                                           OBJECTHANDLE handle, const DebuggerIPCE_ExpandedTypeData* resultType)
+HRESULT Debugger::PrefetchObjectFieldMemory(DebuggerRCThread* rcThread, UINT32 version, CORDB_ADDRESS objectAddress,
+                                          UINT32 objectSize, UINT32 snapshotSize, const BYTE* snapshot)
 {
     DebuggerIPCEvent* event = rcThread->GetIPCEventReceiveBuffer();
     InitIPCEvent(event, DB_IPCE_PREFETCH_TYPE_MEMORY_RESULT, nullptr);
@@ -841,18 +1065,52 @@ HRESULT Debugger::PrefetchObjectHandleMemory(DebuggerRCThread* rcThread, UINT32 
     NewArrayHolder<BYTE> payload;
     EX_TRY
     {
-        if (handle == nullptr || version != DebuggerPrefetchProtocol::Version ||
-            !DebuggerPrefetchProtocol::IsValidHandleRequest(version, flags))
+        if (version != DebuggerPrefetchProtocol::Version || objectAddress == 0 || objectAddress > UINT32_MAX ||
+            objectSize < sizeof(Object) || snapshotSize != min(objectSize,
+                DebuggerPrefetchProtocol::MaximumObjectSnapshotSize))
             ThrowHR(E_INVALIDARG);
         WasmMemoryCollector collector;
-        if ((flags & DebuggerPrefetchProtocol::HandleCommon) != 0)
+        bool complete = collector.AddObjectFieldMemory(reinterpret_cast<Object*>(static_cast<TADDR>(objectAddress)),
+            objectSize, snapshotSize, snapshot);
+        UINT32 count = collector.Count();
+        UINT32 size = count * DebuggerPrefetchProtocol::RecordSize;
+        if (size != 0)
+        {
+            payload = new BYTE[size];
+            collector.Copy(payload.GetValue());
+        }
+        event->PrefetchTypeMemory.lineCount = count;
+        event->PrefetchTypeMemory.payloadSize = size;
+        hr = complete ? S_OK : S_FALSE;
+    }
+    EX_CATCH_HRESULT(hr);
+    event->hr = hr;
+    return rcThread->SendIPCReply(SUCCEEDED(hr) ? payload.GetValue() : nullptr,
+        event->PrefetchTypeMemory.payloadSize);
+}
+
+HRESULT Debugger::PrefetchFunctionMemory(DebuggerRCThread* rcThread, UINT32 version, UINT32 flags,
+                                       Assembly* assembly, mdMethodDef token)
+{
+    DebuggerIPCEvent* event = rcThread->GetIPCEventReceiveBuffer();
+    InitIPCEvent(event, DB_IPCE_PREFETCH_TYPE_MEMORY_RESULT, nullptr);
+    event->PrefetchTypeMemory.version = DebuggerPrefetchProtocol::Version;
+    event->PrefetchTypeMemory.lineSize = DebuggerPrefetchProtocol::LineSize;
+    HRESULT hr = S_OK;
+    NewArrayHolder<BYTE> payload;
+    EX_TRY
+    {
+        if (!DebuggerPrefetchProtocol::IsValidFunctionRequest(version, flags) || assembly == nullptr ||
+            TypeFromToken(token) != mdtMethodDef || IsNilToken(token))
+            ThrowHR(E_INVALIDARG);
+        Module* module = assembly->GetModule();
+        if (module == nullptr || !module->GetMDImport()->IsValidToken(token))
+            ThrowHR(E_INVALIDARG);
+        WasmMemoryCollector collector;
+        if ((flags & DebuggerPrefetchProtocol::CommonMemory) != 0)
             collector.AddCommonMemory();
         UINT32 commonCount = collector.Count();
-        collector.AddObjectHandle(handle);
-        if (resultType != nullptr)
-            collector.AddResultType(*resultType);
-        else
-            collector.AddObjectDereferenceMemory(handle);
+        bool complete = collector.AddFunctionMemory(module, token);
         UINT32 count = collector.Count();
         UINT32 size = count * DebuggerPrefetchProtocol::RecordSize;
         payload = new BYTE[size];
@@ -860,6 +1118,72 @@ HRESULT Debugger::PrefetchObjectHandleMemory(DebuggerRCThread* rcThread, UINT32 
         event->PrefetchTypeMemory.lineCount = count;
         event->PrefetchTypeMemory.commonLineCount = commonCount;
         event->PrefetchTypeMemory.payloadSize = size;
+        hr = complete ? S_OK : S_FALSE;
+    }
+    EX_CATCH_HRESULT(hr);
+    event->hr = hr;
+    return rcThread->SendIPCReply(SUCCEEDED(hr) ? payload.GetValue() : nullptr,
+        event->PrefetchTypeMemory.payloadSize);
+}
+
+HRESULT Debugger::PrefetchEvalResultMemory(DebuggerRCThread* rcThread, UINT32 version, UINT32 flags,
+                                         OBJECTHANDLE handle, DebuggerIPCE_ExpandedTypeData resultType)
+{
+    return PrefetchObjectMemory(rcThread, version, flags, handle, 0, &resultType);
+}
+
+HRESULT Debugger::PrefetchHandleDereferenceMemory(DebuggerRCThread* rcThread, UINT32 version, UINT32 flags,
+                                                OBJECTHANDLE handle)
+{
+    return PrefetchObjectMemory(rcThread, version, flags, handle, 0, nullptr);
+}
+
+HRESULT Debugger::PrefetchReferenceDereferenceMemory(DebuggerRCThread* rcThread, UINT32 version, UINT32 flags,
+                                                   CORDB_ADDRESS objectAddress)
+{
+    return PrefetchObjectMemory(rcThread, version, flags, nullptr, objectAddress, nullptr);
+}
+
+HRESULT Debugger::PrefetchObjectMemory(DebuggerRCThread* rcThread, UINT32 version, UINT32 flags,
+                                     OBJECTHANDLE handle, CORDB_ADDRESS objectAddress,
+                                     const DebuggerIPCE_ExpandedTypeData* resultType)
+{
+    DebuggerIPCEvent* event = rcThread->GetIPCEventReceiveBuffer();
+    InitIPCEvent(event, DB_IPCE_PREFETCH_TYPE_MEMORY_RESULT, nullptr);
+    event->PrefetchTypeMemory.version = DebuggerPrefetchProtocol::Version;
+    event->PrefetchTypeMemory.lineSize = DebuggerPrefetchProtocol::LineSize;
+    HRESULT hr = S_OK;
+    NewArrayHolder<BYTE> payload;
+    EX_TRY
+    {
+        if ((handle == nullptr) == (objectAddress == 0) || objectAddress > UINT32_MAX ||
+            !DebuggerPrefetchProtocol::IsValidObjectRequest(version, flags))
+            ThrowHR(E_INVALIDARG);
+        WasmMemoryCollector collector;
+        if ((flags & DebuggerPrefetchProtocol::HandleCommon) != 0)
+            collector.AddCommonMemory();
+        UINT32 commonCount = collector.Count();
+        Object* object;
+        if (handle != nullptr)
+            object = collector.AddObjectHandle(handle);
+        else
+        {
+            object = reinterpret_cast<Object*>(static_cast<TADDR>(objectAddress));
+            collector.AddObject(object);
+        }
+        bool complete = true;
+        if (resultType != nullptr)
+            collector.AddResultType(*resultType);
+        else
+            complete = collector.AddObjectDereferenceMemory(object);
+        UINT32 count = collector.Count();
+        UINT32 size = count * DebuggerPrefetchProtocol::RecordSize;
+        payload = new BYTE[size];
+        collector.Copy(payload.GetValue());
+        event->PrefetchTypeMemory.lineCount = count;
+        event->PrefetchTypeMemory.commonLineCount = commonCount;
+        event->PrefetchTypeMemory.payloadSize = size;
+        hr = complete ? S_OK : S_FALSE;
     }
     EX_CATCH_HRESULT(hr);
     event->hr = hr;
@@ -907,6 +1231,19 @@ EXTERN_C const IID IID_IDebugChannel;
 
 EM_JS(int, coreclr_wasm_debugger_transport_available, (), {
     return globalThis.__coreclrWasmDebuggerTransport ? 1 : 0;
+});
+
+EM_JS(void, coreclr_wasm_debugger_publish_func_eval_buffer, (const void* state), {
+    const transport = globalThis.__coreclrWasmDebuggerTransport;
+    if (transport.hasPendingFuncEval)
+        return;
+    transport.hasPendingFuncEval = () => {
+        const index = state >>> 2;
+        const address = HEAPU32[index];
+        const processed = HEAPU32[index + 3];
+        return HEAPU32[index + 4] !== 0 ||
+            (address !== 0 && HEAPU32[(address + processed) >>> 2] !== 0);
+    };
 });
 
 EM_JS(int, coreclr_wasm_debugger_incoming_byte_count, (), {
@@ -1109,6 +1446,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE int CoreClrWasmDebuggerTransportPump()
     {
         return E_UNEXPECTED;
     }
+
+    coreclr_wasm_debugger_publish_func_eval_buffer(&g_debuggerFuncEvalBuffer);
 
     while (g_pDbgTransport->HasPendingEvent())
     {

@@ -2529,6 +2529,9 @@ public:
     void UnloadAssembly(Assembly * pAssembly);
 
     HRESULT FuncEvalSetup(DebuggerIPCE_FuncEvalInfo *pEvalInfo, BYTE **argDataArea, DebuggerEval **debuggerEvalKey);
+    void ProcessBufferedFuncEvals(Thread* thread);
+    DebuggerEval* FindBufferedFuncEval(UINT64 id);
+    HRESULT AbortBufferedFuncEvalRequest(UINT64 id);
     HRESULT FuncEvalAbort(DebuggerEval *debuggerEvalKey);
     HRESULT FuncEvalRudeAbort(DebuggerEval *debuggerEvalKey);
     HRESULT FuncEvalCleanup(DebuggerEval *debuggerEvalKey);
@@ -2717,10 +2720,17 @@ private:
                                     OBJECTHANDLE handle, DebuggerIPCE_ExpandedTypeData resultType);
     HRESULT PrefetchHandleDereferenceMemory(DebuggerRCThread* rcThread, UINT32 version, UINT32 flags,
                                            OBJECTHANDLE handle);
-    HRESULT PrefetchObjectHandleMemory(DebuggerRCThread* rcThread, UINT32 version, UINT32 flags,
-                                      OBJECTHANDLE handle, const DebuggerIPCE_ExpandedTypeData* resultType);
+    HRESULT PrefetchReferenceDereferenceMemory(DebuggerRCThread* rcThread, UINT32 version, UINT32 flags,
+                                              CORDB_ADDRESS objectAddress);
+    HRESULT PrefetchFunctionMemory(DebuggerRCThread* rcThread, UINT32 version, UINT32 flags,
+                                   Assembly* assembly, mdMethodDef token);
+    HRESULT PrefetchObjectMemory(DebuggerRCThread* rcThread, UINT32 version, UINT32 flags,
+                                OBJECTHANDLE handle, CORDB_ADDRESS objectAddress,
+                                const DebuggerIPCE_ExpandedTypeData* resultType);
     HRESULT PrefetchFieldMemory(DebuggerRCThread* rcThread, UINT32 version, TypeHandle type,
                                 Module* module, mdTypeDef token);
+    HRESULT PrefetchObjectFieldMemory(DebuggerRCThread* rcThread, UINT32 version, CORDB_ADDRESS objectAddress,
+                                     UINT32 objectSize, UINT32 snapshotSize, const BYTE* snapshot);
 #endif
 
     // Allocate a buffer in the left-side for use by the right-side
@@ -3380,6 +3390,10 @@ public:
  * type arguments <string,List<int>> you get string followed by List followed by int.
  * ------------------------------------------------------------------------ */
 
+#ifdef FEATURE_SINGLE_THREADED_DEBUGGER
+extern DebuggerFuncEvalBuffer::State g_debuggerFuncEvalBuffer;
+#endif
+
 class DebuggerEval
 {
 public:
@@ -3418,6 +3432,8 @@ public:
     bool                               m_aborted;           // Was this eval aborted
     bool                               m_completed;          // Is the eval complete - successfully or by aborting
     bool                               m_evalUsesHijack;
+    UINT64                             m_bufferedEvalId = 0;
+    DebuggerEval*                      m_nextBufferedEval = nullptr;
     VMPTR_OBJECTHANDLE                 m_vmObjectHandle;
     TypeHandle                         m_ownerTypeHandle;
     DebuggerEvalBreakpointInfoSegment* m_bpInfoSegment;

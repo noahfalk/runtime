@@ -177,6 +177,15 @@ HRESULT CordbClass::GetStaticFieldValue(mdFieldDef fieldDef,
 
         IfFailThrow(hr);
 
+        if (CordbType::FullTypeInfoEnabled() && !fEnCHangingField && !pFieldData->m_fFldIsCollectibleStatic &&
+            pFieldData->OkToGetOrSetStaticAddress() &&
+            pFieldData->GetStaticAddress() == (CORDB_ADDRESS)NULL)
+        {
+            Init(FullInfo, TRUE);
+            // Refreshing replaces m_fieldList, so reacquire the field pointer.
+            IfFailThrow(GetFieldInfo(fieldDef, &pFieldData));
+        }
+
         {
             Instantiation emptyInst;
 
@@ -743,12 +752,14 @@ HRESULT CordbClass::GetThisType(const Instantiation * pInst, CordbType ** ppResu
 // Note:
 //   Throws CORDBG_E_CLASS_NOT_LOADED on failure
 //-----------------------------------------------------------------------------
-void CordbClass::Init(ClassLoadLevel desiredLoadLevel)
+void CordbClass::Init(ClassLoadLevel desiredLoadLevel, BOOL fForceInit)
 {
     INTERNAL_SYNC_API_ENTRY(this->GetProcess());
 
     CordbProcess * pProcess = GetProcess();
     IDacDbiInterface* pDac = pProcess->GetDAC();
+    if (CordbType::FullTypeInfoEnabled() && desiredLoadLevel == FullInfo)
+        desiredLoadLevel = LayoutInfo;
 
     // If we've done a continue since the last time we got hanging static fields,
     // we should clear out our cache, since everything may have moved.
@@ -758,7 +769,7 @@ void CordbClass::Init(ClassLoadLevel desiredLoadLevel)
         m_continueCounterLastSync = GetProcess()->m_continueCounter;
     }
 
-    if (m_loadLevel < desiredLoadLevel)
+    if (m_loadLevel < desiredLoadLevel || fForceInit)
     {
         // reset everything
         m_loadLevel = Constructed;
@@ -784,7 +795,7 @@ void CordbClass::Init(ClassLoadLevel desiredLoadLevel)
         }
 
         // full info load level
-        if(desiredLoadLevel == FullInfo)
+        if(desiredLoadLevel >= LayoutInfo)
         {
             CallbackAccumulator<FieldData> acc;
 
@@ -801,13 +812,10 @@ void CordbClass::Init(ClassLoadLevel desiredLoadLevel)
 
             BOOL fGotUnallocatedStatic = GotUnallocatedStatic(&m_classInfo.m_fieldList);
 
-            // if we have an unallocated static don't record that we reached FullInfo stage
-            // this seems pretty ugly but I don't want to bite off cleaning this up just yet
-            // Not saving the FullInfo stage effectively means future calls to Init() will
-            // re-init everything and some parts of DBI may be depending on that re-initialization
-            // with alternate data in order to operate correctly
-            if(!fGotUnallocatedStatic)
-                m_loadLevel = FullInfo;
+            // Structural layout can be cached before static storage is allocated.
+            // Without FullTypeInfo, preserve the legacy retry behavior.
+            if(CordbType::FullTypeInfoEnabled() || !fGotUnallocatedStatic)
+                m_loadLevel = desiredLoadLevel;
         }
     }
 } // CordbClass::Init

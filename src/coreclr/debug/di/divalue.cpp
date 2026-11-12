@@ -1122,6 +1122,18 @@ HRESULT CordbReferenceValue::Dereference(ICorDebugValue **ppValue)
             ThrowHR(CORDBG_E_BAD_REFERENCE_VALUE);
         }
 
+        switch (m_type->m_elementType)
+        {
+            case ELEMENT_TYPE_CLASS:
+            case ELEMENT_TYPE_OBJECT:
+            case ELEMENT_TYPE_STRING:
+            case ELEMENT_TYPE_ARRAY:
+            case ELEMENT_TYPE_SZARRAY:
+                GetProcess()->PrefetchReferenceDereferenceMemory(m_info.objRef);
+                break;
+            default:
+                break;
+        }
         hr = DereferenceCommon(m_appdomain, m_type, m_realTypeOfTypedByref, &m_info, ppValue);
     }
     EX_CATCH_HRESULT(hr);
@@ -2219,11 +2231,13 @@ HRESULT CordbObjectValue::GetFieldValueForType(ICorDebugType * pType,
 
             CordbModule * pModule = pCordbType->m_pClass->GetModule();
 
-            SigParser sigParser;
-            IfFailThrow(pFieldData->GetFieldSignature(pModule, &sigParser));
-
-            CordbType * pFieldType;
-            IfFailThrow(CordbType::SigToType(pModule, &sigParser, &(pCordbType->m_inst), &pFieldType));
+            CordbType *pFieldType = pCordbType->GetResolvedFieldType(fieldDef);
+            if (pFieldType == NULL)
+            {
+                SigParser sigParser;
+                IfFailThrow(pFieldData->GetFieldSignature(pModule, &sigParser));
+                IfFailThrow(CordbType::SigToType(pModule, &sigParser, &(pCordbType->m_inst), &pFieldType));
+            }
 
             ULONG32 size = GetSizeForType(pFieldType, kUnboxed);
 
@@ -2292,7 +2306,12 @@ HRESULT CordbObjectValue::GetFieldValue(ICorDebugClass *pClass,
 
     EX_TRY
     {
-        GetProcess()->PrefetchFieldMemory(m_type);
+        IfFailThrow(m_type->EnsureFullTypeInfo());
+        if (!m_fieldValueAccessed)
+        {
+            m_fieldValueAccessed = true;
+            GetProcess()->PrefetchObjectFieldMemory(m_info.objRef, m_pObjectCopy, m_size);
+        }
     }
     EX_CATCH_HRESULT(hr);
     IfFailRet(hr);
@@ -2852,6 +2871,11 @@ HRESULT CordbObjectValue::GetFunctionHelper(ICorDebugFunction **ppFunction)
         func.Assign(funcModule->LookupOrCreateFunction(functionMethodDef, (SIZE_T)nativeCodeForDelFunc.encVersion));
     }
 
+    // Use GetNativeCode's initializer without re-entering its non-reentrant public API.
+    HRESULT hr = func->InitNativeCodeInfo(true);
+    if (hr != CORDBG_E_FUNCTION_NOT_IL)
+        IfFailThrow(hr);
+
     *ppFunction = static_cast<ICorDebugFunction*> (func.GetValue());
     func->ExternalAddRef();
 
@@ -3222,15 +3246,13 @@ HRESULT CordbVCObjectValue::GetFieldValueForType(ICorDebugType * pType,
 
         CordbModule * pModule = pCordbType->m_pClass->GetModule();
 
-        SigParser sigParser;
-        IfFailThrow(pFieldData->GetFieldSignature(pModule, &sigParser));
-
-        // <TODO>
-        // How can I assert that I have exactly one field?
-        // </TODO>
-        CordbType * pFieldType;
-
-        IfFailThrow(CordbType::SigToType(pModule, &sigParser, &(pCordbType->m_inst), &pFieldType));
+        CordbType *pFieldType = pCordbType->GetResolvedFieldType(fieldDef);
+        if (pFieldType == NULL)
+        {
+            SigParser sigParser;
+            IfFailThrow(pFieldData->GetFieldSignature(pModule, &sigParser));
+            IfFailThrow(CordbType::SigToType(pModule, &sigParser, &(pCordbType->m_inst), &pFieldType));
+        }
 
         _ASSERTE(pFieldData->OkToGetOrSetInstanceOffset());
         // Compute the address of the field contents in our local object cache
@@ -3269,7 +3291,7 @@ HRESULT CordbVCObjectValue::GetFieldValue(ICorDebugClass *pClass,
     VALIDATE_POINTER_TO_OBJECT(pClass, ICorDebugClass *);
     VALIDATE_POINTER_TO_OBJECT(ppValue, ICorDebugValue **);
 
-    HRESULT hr;
+    HRESULT hr = S_OK;
     _ASSERTE(m_type);
 
     if (m_type->m_elementType != ELEMENT_TYPE_CLASS &&
@@ -3279,6 +3301,13 @@ HRESULT CordbVCObjectValue::GetFieldValue(ICorDebugClass *pClass,
     }
 
     RSExtSmartPtr<CordbType> relevantType;
+
+    EX_TRY
+    {
+        IfFailThrow(m_type->EnsureFullTypeInfo());
+    }
+    EX_CATCH_HRESULT(hr);
+    IfFailRet(hr);
 
     if (FAILED (hr= m_type->GetParentType((CordbClass *) pClass, &relevantType)))
     {

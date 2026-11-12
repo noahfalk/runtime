@@ -910,13 +910,13 @@ HRESULT CordbFunction::InitParentClassOfFunction()
 
 // Get information about the native code blob for a function and add it to m_nativeCodeTable
 // Arguments:
-//     Input: none, but we use some data members of this instance of CordbFunction
+//     Input: loadNativeInfo also initializes cached sequence points and native variable data.
 //     Output: standard HRESULT value
 // Notes: Apart from the HRESULT, this function will build a new instance of CordbNativeCode and
 //        add it to the hash table of CordbNativeCodes for this function, unless we have done that
 //        previously
 
-HRESULT CordbFunction::InitNativeCodeInfo()
+HRESULT CordbFunction::InitNativeCodeInfo(bool loadNativeInfo)
 {
     INTERNAL_SYNC_API_ENTRY(GetProcess());
 
@@ -954,6 +954,11 @@ HRESULT CordbFunction::InitNativeCodeInfo()
         {
             m_nativeCode.Assign(m_pModule->LookupOrCreateNativeCode(m_MDToken, codeInfo.vmNativeCodeMethodDescToken,
                 codeInfo.m_rgCodeRegions[kHot].pAddress));
+        }
+
+        if (loadNativeInfo && m_nativeCode != NULL)
+        {
+            m_nativeCode->LoadNativeInfo();
         }
 
      }

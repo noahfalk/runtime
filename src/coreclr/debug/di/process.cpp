@@ -5416,8 +5416,42 @@ void CordbProcess::RawDispatchEvent(
 
         break;
 
+    case DB_IPCE_FUNC_EVAL_BUFFER_READY:
+        {
+            CordbEval* eval = m_pendingBufferedEval;
+            TargetConsistencyCheck(eval != nullptr);
+            m_pendingBufferedEval = nullptr;
+            if (FAILED(pEvent->hr))
+            {
+                auto request = reinterpret_cast<DebuggerFuncEvalBufferRequest*>(eval->m_bufferedRequest.GetValue());
+                HRESULT failure = pEvent->hr;
+                RSPTR_CORDBEVAL key = request->info.funcEvalKey;
+                memset(&pEvent->FuncEvalComplete, 0, sizeof(pEvent->FuncEvalComplete));
+                pEvent->FuncEvalComplete.funcEvalKey = key;
+                pEvent->FuncEvalComplete.setupHr = failure;
+                pEvent->FuncEvalComplete.resultType.elementType = ELEMENT_TYPE_VOID;
+                pEvent->type = DB_IPCE_FUNC_EVAL_COMPLETE;
+                goto BufferedEvalComplete;
+            }
+            m_funcEvalBufferState.address = pEvent->FuncEvalBufferReady.address;
+            m_funcEvalBufferState.capacity = pEvent->FuncEvalBufferReady.capacity;
+            m_funcEvalBufferState.generation = pEvent->FuncEvalBufferReady.generation;
+            m_funcEvalBufferWritten = 0;
+            auto request = reinterpret_cast<DebuggerFuncEvalBufferRequest*>(eval->m_bufferedRequest.GetValue());
+            TargetConsistencyCheck(eval->m_bufferedRequestSize <= m_funcEvalBufferState.capacity);
+            request->generation = m_funcEvalBufferState.generation;
+            SafeWriteBuffer(TargetBuffer(m_funcEvalBufferState.address, eval->m_bufferedRequestSize),
+                eval->m_bufferedRequest.GetValue());
+            m_funcEvalBufferWritten = request->bytes;
+            eval->m_bufferedRequest = nullptr;
+            RSInverseLockHolder inverse(GetProcessLock());
+            IfFailThrow(ContinueInternal(FALSE));
+        }
+        break;
+
     case DB_IPCE_FUNC_EVAL_COMPLETE:
         {
+BufferedEvalComplete:
             LOG((LF_CORDB, LL_INFO1000, "RCET::DRCE: func eval complete.\n"));
 #ifdef HOST_WINDOWS
             LogWasmFuncEval("[WASMDBG][DBI] FUNC_EVAL_COMPLETE received.");
@@ -5456,6 +5490,16 @@ void CordbProcess::RawDispatchEvent(
             pEval->m_vmObjectHandle = pEvent->FuncEvalComplete.vmObjectHandle;
             pEval->m_resultType     = pEvent->FuncEvalComplete.resultType;
             pEval->m_resultAppDomainToken = pEvent->FuncEvalComplete.vmAppDomain;
+            pEval->m_bufferedSetupHr = pEvent->FuncEvalComplete.setupHr;
+            if (FAILED(pEval->m_bufferedSetupHr) || pEval->m_bufferedSetupHr == CORDBG_S_FUNC_EVAL_ABORTED)
+                pEval->m_bufferedEvalId = 0;
+            UINT32 generation = pEvent->FuncEvalComplete.bufferGeneration;
+            if (generation != 0 && generation != m_funcEvalBufferState.generation)
+            {
+                m_funcEvalBufferState.generation = generation;
+                m_funcEvalBufferWritten = 0;
+            }
+            pEval->m_bufferedRequest = nullptr;
 
             CordbAppDomain *pResultAppDomain = GetAppDomain();
 
@@ -9556,6 +9600,7 @@ HRESULT CordbRCEventThread::SendIPCEvent(CordbProcess* process,
     _ASSERTE(process != NULL);
     _ASSERTE(event != NULL);
 
+    const bool readOnlyPrefetch = IsReadOnlyPrefetchIPCEvent(event->type);
 #ifdef _WIN32
     WasmDbgApiTrace ipcTrace(IPCENames::GetName(event->type), process, 4,
         event->type, (event->replyRequired ? 1 : 0) | (event->asyncSend ? 2 : 0));
@@ -9898,7 +9943,8 @@ HRESULT CordbRCEventThread::SendIPCEvent(CordbProcess* process,
         }
     }
 
-    process->ForceDacFlush(PROCESS_RUNNING);
+    if (!readOnlyPrefetch)
+        process->ForceDacFlush(PROCESS_RUNNING);
 
     // The hr and hrEvent are 2 very different things.
     // hr tells us whether the event was sent successfully.
@@ -15085,7 +15131,7 @@ bool CordbProcess::PrefetchEvalResultMemory(VMPTR_OBJECTHANDLE handle, const Deb
     event.PrefetchEvalResultMemory.flags = flags;
     event.PrefetchEvalResultMemory.vmObjectHandle = handle;
     event.PrefetchEvalResultMemory.resultType = type;
-    [[maybe_unused]] UINT32 count = PrefetchHandleMemory(&event, flags);
+    [[maybe_unused]] UINT32 count = PrefetchDependencyMemory(&event, flags);
 #ifdef _WIN32
     trace.SetResult(S_OK, count);
 #endif
@@ -15110,13 +15156,176 @@ void CordbProcess::PrefetchHandleDereferenceMemory(VMPTR_OBJECTHANDLE handle)
     event.PrefetchHandleDereferenceMemory.version = DebuggerPrefetchProtocol::Version;
     event.PrefetchHandleDereferenceMemory.flags = flags;
     event.PrefetchHandleDereferenceMemory.vmObjectHandle = handle;
-    [[maybe_unused]] UINT32 count = PrefetchHandleMemory(&event, flags);
+    [[maybe_unused]] UINT32 count = PrefetchDependencyMemory(&event, flags);
 #ifdef _WIN32
     trace.SetResult(S_OK, count);
 #endif
 }
 
-UINT32 CordbProcess::PrefetchHandleMemory(DebuggerIPCEvent* event, UINT32 requestedFlags)
+void CordbProcess::PrefetchReferenceDereferenceMemory(CORDB_ADDRESS objectAddress)
+{
+   if (m_pPrefetchDataTarget == nullptr || m_pEventChannel == nullptr || m_pShim != nullptr ||
+       ThreadHoldsProcessLock() || !GetSynchronized())
+       return;
+   static const bool enabled = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_WasmDbgReferenceDereferencePrefetch) != 0;
+   if (!enabled)
+       return;
+#ifdef _WIN32
+   WasmDbgApiTrace trace("DBI::PrefetchReferenceDereferenceMemory", this, 8, objectAddress, m_continueCounter);
+#endif
+   UINT32 flags = DebuggerPrefetchProtocol::HandleObject |
+       (m_pPrefetchDataTarget->ContainsCommon() ? 0 : DebuggerPrefetchProtocol::HandleCommon);
+   DebuggerIPCEvent event;
+   InitIPCEvent(&event, DB_IPCE_PREFETCH_REFERENCE_DEREFERENCE_MEMORY, true, VMPTR_AppDomain::NullPtr());
+   event.PrefetchReferenceDereferenceMemory.version = DebuggerPrefetchProtocol::Version;
+   event.PrefetchReferenceDereferenceMemory.flags = flags;
+   event.PrefetchReferenceDereferenceMemory.objectAddress = objectAddress;
+   [[maybe_unused]] UINT32 count = PrefetchDependencyMemory(&event, flags);
+#ifdef _WIN32
+   trace.SetResult(event.hr, count);
+#endif
+}
+
+HRESULT CordbProcess::QueueBufferedFuncEval(CordbEval* eval, DebuggerIPCEvent* event,
+    const void* types, UINT32 typeBytes, const void* data1, UINT32 bytes1,
+    const void* data2, UINT32 bytes2)
+{
+#ifdef _WIN32
+    WasmDbgApiTrace trace("DBI::BufferedFuncEvalSetup", this, 8);
+#endif
+    HRESULT hr = S_OK;
+    EX_TRY
+    {
+        if (m_exiting || m_terminated || m_pendingBufferedEval != nullptr)
+            ThrowHR(CORDBG_E_FUNC_EVAL_NOT_COMPLETE);
+        RSExtSmartPtr<IDacDbiFuncEvalBuffer> dac;
+        IfFailThrow(GetDAC()->QueryInterface(__uuidof(IDacDbiFuncEvalBuffer), reinterpret_cast<void**>(&dac)));
+        {
+#ifdef _WIN32
+            WasmDbgApiTrace validation("cDAC::ValidateBufferedFuncEval", this, 3);
+#endif
+            HRESULT validationHr = dac->ValidateFuncEval(event->FuncEval.vmThreadToken, event->FuncEval.evalDuringException);
+#ifdef _WIN32
+            validation.SetResult(validationHr);
+#endif
+            IfFailThrow(validationHr);
+        }
+        if (m_funcEvalBufferStateAddress == 0)
+        {
+            CORDB_ADDRESS address;
+            DebuggerFuncEvalBuffer::State state;
+            IfFailThrow(dac->GetBufferStateAddress(&address));
+            SafeReadBuffer(TargetBuffer(address, sizeof(state)), reinterpret_cast<BYTE*>(&state));
+            if (state.address == 0 || state.capacity < DebuggerFuncEvalBuffer::InitialCapacity ||
+                state.capacity > DebuggerFuncEvalBuffer::MaximumCapacity || state.processed != 0 ||
+                state.requestedCapacity != 0 || state.generation == 0)
+                ThrowHR(E_UNEXPECTED);
+            m_funcEvalBufferStateAddress = address;
+            m_funcEvalBufferState = state;
+        }
+        NewArrayHolder<UINT32> dimensions;
+        if (event->FuncEval.funcEvalType == DB_IPCE_FET_NEW_ARRAY)
+        {
+            UINT32 rank = event->FuncEval.arrayRank;
+            if (static_cast<UINT64>(rank) * sizeof(SIZE_T) != bytes1 ||
+                rank > DebuggerFuncEvalBuffer::MaximumCapacity / sizeof(UINT32))
+                ThrowHR(E_INVALIDARG);
+            dimensions = new (nothrow) UINT32[rank];
+            if (dimensions == nullptr)
+                ThrowHR(E_OUTOFMEMORY);
+            for (UINT32 i = 0; i < rank; ++i)
+            {
+                SIZE_T value = static_cast<const SIZE_T*>(data1)[i];
+                if (value > UINT32_MAX)
+                    ThrowHR(E_INVALIDARG);
+                dimensions[i] = static_cast<UINT32>(value);
+            }
+            data1 = dimensions.GetValue();
+            bytes1 = rank * sizeof(UINT32);
+        }
+        UINT64 dataBytes = static_cast<UINT64>(typeBytes) + bytes1 + bytes2;
+        if (dataBytes > DebuggerFuncEvalBuffer::MaximumCapacity)
+            ThrowHR(E_INVALIDARG);
+        UINT32 recordBytes = DebuggerFuncEvalBuffer::RecordSize(sizeof(DebuggerFuncEvalBufferRequest),
+            static_cast<UINT32>(dataBytes));
+        if (recordBytes == 0 || recordBytes > DebuggerFuncEvalBuffer::MaximumCapacity - sizeof(UINT32) ||
+            m_nextBufferedEvalId == UINT64_MAX)
+            ThrowHR(E_INVALIDARG);
+        UINT32 writeBytes = recordBytes + sizeof(UINT32);
+        NewArrayHolder<BYTE> bytes(new (nothrow) BYTE[writeBytes]{});
+        if (bytes == nullptr)
+            ThrowHR(E_OUTOFMEMORY);
+        auto request = reinterpret_cast<DebuggerFuncEvalBufferRequest*>(bytes.GetValue());
+        request->bytes = recordBytes;
+        request->version = DebuggerFuncEvalBuffer::Version;
+        request->id = ++m_nextBufferedEvalId;
+        request->generation = m_funcEvalBufferState.generation;
+        request->dataBytes = static_cast<UINT32>(dataBytes);
+        request->info = event->FuncEval;
+        BYTE* destination = bytes.GetValue() + sizeof(*request);
+        if (typeBytes != 0) { memcpy(destination, types, typeBytes); destination += typeBytes; }
+        if (bytes1 != 0) { memcpy(destination, data1, bytes1); destination += bytes1; }
+        if (bytes2 != 0) memcpy(destination, data2, bytes2);
+        UINT64 id = request->id;
+        if (m_funcEvalBufferWritten <= m_funcEvalBufferState.capacity &&
+            writeBytes <= m_funcEvalBufferState.capacity - m_funcEvalBufferWritten)
+        {
+            SafeWriteBuffer(TargetBuffer(m_funcEvalBufferState.address + m_funcEvalBufferWritten, writeBytes),
+                bytes.GetValue());
+            m_funcEvalBufferWritten += recordBytes;
+        }
+        else
+        {
+            UINT32 capacity = max(writeBytes, m_funcEvalBufferState.capacity <= DebuggerFuncEvalBuffer::MaximumCapacity / 2
+                ? m_funcEvalBufferState.capacity * 2 : DebuggerFuncEvalBuffer::MaximumCapacity);
+            if (capacity <= m_funcEvalBufferState.capacity)
+                ThrowHR(E_OUTOFMEMORY);
+            SafeWriteBuffer(TargetBuffer(m_funcEvalBufferStateAddress +
+                offsetof(DebuggerFuncEvalBuffer::State, requestedCapacity), sizeof(capacity)),
+                reinterpret_cast<BYTE*>(&capacity));
+            eval->m_bufferedRequest = bytes.Extract();
+            eval->m_bufferedRequestSize = writeBytes;
+            m_pendingBufferedEval = eval;
+        }
+        eval->m_bufferedEvalId = id;
+        eval->m_bufferedSetupHr = S_OK;
+        IncrementOutstandingEvalCount();
+#ifdef _WIN32
+        trace.SetResult(S_OK, writeBytes);
+#endif
+    }
+    EX_CATCH_HRESULT(hr);
+#ifdef _WIN32
+    if (FAILED(hr)) trace.SetResult(hr);
+#endif
+    return hr;
+}
+
+void CordbProcess::PrefetchFunctionMemory(VMPTR_Assembly assembly, mdMethodDef token)
+{
+    if (m_pPrefetchDataTarget == nullptr || m_pEventChannel == nullptr || m_pShim != nullptr ||
+        ThreadHoldsProcessLock() || !GetSynchronized())
+        return;
+    static const bool enabled = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_WasmDbgFunctionPrefetch) != 0;
+    if (!enabled)
+        return;
+#ifdef _WIN32
+    WasmDbgApiTrace trace("DBI::PrefetchFunctionMemory", this, 8, token, m_continueCounter);
+#endif
+    UINT32 flags = m_pPrefetchDataTarget->ContainsCommon() ? 0 : DebuggerPrefetchProtocol::CommonMemory;
+    DebuggerIPCEvent event;
+    InitIPCEvent(&event, DB_IPCE_PREFETCH_FUNCTION_MEMORY, true, VMPTR_AppDomain::NullPtr());
+    event.PrefetchFunctionMemory.version = DebuggerPrefetchProtocol::Version;
+    event.PrefetchFunctionMemory.flags = flags;
+    event.PrefetchFunctionMemory.vmAssembly = assembly;
+    event.PrefetchFunctionMemory.methodDef = token;
+    [[maybe_unused]] UINT32 count = PrefetchDependencyMemory(&event, flags);
+#ifdef _WIN32
+    trace.SetResult(event.hr, count);
+#endif
+}
+
+UINT32 CordbProcess::PrefetchDependencyMemory(DebuggerIPCEvent* event, UINT32 requestedFlags)
 {
     HRESULT hr = SendIPCEvent(event, sizeof(*event));
     BYTE* bytes = nullptr;
@@ -15128,7 +15337,7 @@ UINT32 CordbProcess::PrefetchHandleMemory(DebuggerIPCEvent* event, UINT32 reques
         ThrowHR(E_UNEXPECTED);
     IfFailThrow(event->hr);
     const auto& reply = event->PrefetchTypeMemory;
-    bool common = (requestedFlags & DebuggerPrefetchProtocol::HandleCommon) != 0;
+    bool common = (requestedFlags & DebuggerPrefetchProtocol::CommonMemory) != 0;
     if (reply.version != DebuggerPrefetchProtocol::Version ||
         !DebuggerPrefetchProtocol::IsValidHandleReply(reply.version, reply.lineSize, reply.lineCount,
         reply.commonLineCount, reply.payloadSize, size, true) ||
@@ -15153,7 +15362,7 @@ void CordbProcess::PrefetchFieldMemory(CordbType* type)
     static const bool enabled = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_WasmDbgFieldPrefetch) != 0;
     // CordbTypes are interned, including their exact generic arguments.
     UINT_PTR key = reinterpret_cast<UINT_PTR>(type);
-    if (!enabled || type->m_pClass == nullptr || m_pPrefetchDataTarget->ContainsFieldType(key))
+    if (!enabled || type->m_pClass == nullptr || type->HasFullTypeInfo())
         return;
     if (type->m_typeHandleExact.IsNull() && type->m_inst.m_cInst != 0)
         return;
@@ -15178,8 +15387,50 @@ void CordbProcess::PrefetchFieldMemory(CordbType* type)
     const auto& reply = event.PrefetchTypeMemory;
     if (!DebuggerPrefetchProtocol::IsValidReply(reply.version, reply.lineSize, reply.lineCount,
         reply.payloadSize, size, true) || (size != 0 && bytes == nullptr) ||
-        !m_pPrefetchDataTarget->PopulateFieldType(key,
-            reinterpret_cast<const PrefetchLineCache::Line*>(bytes), reply.lineCount, event.hr == S_OK))
+        !m_pPrefetchDataTarget->PopulateFullTypeInfo(
+            reinterpret_cast<const PrefetchLineCache::Line*>(bytes), reply.lineCount))
+        ThrowHR(E_INVALIDARG);
+#ifdef _WIN32
+    trace.SetResult(event.hr, reply.lineCount);
+#endif
+}
+
+void CordbProcess::PrefetchObjectFieldMemory(CORDB_ADDRESS objectAddress, const BYTE* snapshot, SIZE_T objectSize)
+{
+    if (m_pPrefetchDataTarget == nullptr || m_pEventChannel == nullptr || m_pShim != nullptr ||
+        ThreadHoldsProcessLock() || !GetSynchronized())
+        return;
+    static const bool enabled = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_WasmDbgObjectFieldPrefetch) != 0;
+    if (!enabled)
+        return;
+    if (snapshot == nullptr || objectSize == 0 || objectSize > UINT32_MAX)
+        ThrowHR(E_INVALIDARG);
+#ifdef _WIN32
+    WasmDbgApiTrace trace("DBI::PrefetchObjectFieldMemory", this, 8, objectAddress, objectSize);
+#endif
+    DebuggerIPCEvent event;
+    InitIPCEvent(&event, DB_IPCE_PREFETCH_OBJECT_FIELD_MEMORY, true, VMPTR_AppDomain::NullPtr());
+    auto& request = event.PrefetchObjectFieldMemory;
+    request.version = DebuggerPrefetchProtocol::Version;
+    request.objectAddress = objectAddress;
+    request.objectSize = static_cast<UINT32>(objectSize);
+    request.snapshotSize = static_cast<UINT32>(min(objectSize,
+        SIZE_T(DebuggerPrefetchProtocol::MaximumObjectSnapshotSize)));
+    memcpy(request.snapshot, snapshot, request.snapshotSize);
+    HRESULT hr = SendIPCEvent(&event, sizeof(event));
+    BYTE* bytes = nullptr;
+    DWORD size = 0;
+    m_pEventChannel->TakeReplyPayload(&bytes, &size);
+    NewArrayHolder<BYTE> payload(bytes);
+    IfFailThrow(hr);
+    if (event.type != DB_IPCE_PREFETCH_TYPE_MEMORY_RESULT)
+        ThrowHR(E_UNEXPECTED);
+    IfFailThrow(event.hr);
+    const auto& reply = event.PrefetchTypeMemory;
+    if (!DebuggerPrefetchProtocol::IsValidReply(reply.version, reply.lineSize, reply.lineCount,
+        reply.payloadSize, size, true) || (size != 0 && bytes == nullptr) ||
+        !m_pPrefetchDataTarget->PopulateFullTypeInfo(
+            reinterpret_cast<const PrefetchLineCache::Line*>(bytes), reply.lineCount))
         ThrowHR(E_INVALIDARG);
 #ifdef _WIN32
     trace.SetResult(event.hr, reply.lineCount);

@@ -12,8 +12,15 @@ namespace DebuggerPrefetchProtocol
     constexpr uint32_t RecordSize = sizeof(uint64_t) + LineSize;
     constexpr uint32_t MaximumLines = 131072;
     constexpr uint32_t MaximumPayloadSize = MaximumLines * RecordSize;
+    constexpr uint32_t MaximumObjectSnapshotSize = 1024;
     constexpr uint32_t HandleObject = 1;
-    constexpr uint32_t HandleCommon = 2;
+    constexpr uint32_t CommonMemory = 2;
+    constexpr uint32_t HandleCommon = CommonMemory;
+
+    constexpr bool IsValidFunctionRequest(uint32_t version, uint32_t flags)
+    {
+        return version == Version && (flags & ~CommonMemory) == 0;
+    }
 
     constexpr bool IsValidReply(uint32_t version, uint32_t lineSize, uint32_t lineCount,
         uint32_t payloadSize, uint32_t receivedSize, bool success)
@@ -23,10 +30,15 @@ namespace DebuggerPrefetchProtocol
             (success || payloadSize == 0);
     }
 
+    constexpr bool IsValidObjectRequest(uint32_t version, uint32_t flags)
+    {
+        return version == Version && (flags == HandleObject || flags == (HandleObject | HandleCommon));
+    }
+
     constexpr bool IsValidHandleRequest(uint32_t version, uint32_t flags)
     {
         return (version == 0 && flags == 0) ||
-            (version == Version && (flags == HandleObject || flags == (HandleObject | HandleCommon)));
+            IsValidObjectRequest(version, flags);
     }
 
     constexpr bool IsValidHandleReply(uint32_t version, uint32_t lineSize, uint32_t lineCount,

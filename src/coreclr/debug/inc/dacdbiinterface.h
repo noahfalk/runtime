@@ -161,6 +161,13 @@ typedef void* * RefWalkHandle;
 //-----------------------------------------------------------------------------
 
 // {DB505C1B-A327-4A46-8C32-AF55A56F8E09}
+MIDL_INTERFACE("AF1D836E-AB24-4472-8E87-2A13B94D391D")
+IDacDbiFuncEvalBuffer : public IUnknown
+{
+    virtual HRESULT STDMETHODCALLTYPE GetBufferStateAddress(CORDB_ADDRESS* address) = 0;
+    virtual HRESULT STDMETHODCALLTYPE ValidateFuncEval(VMPTR_Thread thread, BOOL duringException) = 0;
+};
+
 MIDL_INTERFACE("DB505C1B-A327-4A46-8C32-AF55A56F8E09")
 IDacDbiInterface : public IUnknown
 {

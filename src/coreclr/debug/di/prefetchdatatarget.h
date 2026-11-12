@@ -22,7 +22,6 @@ class PrefetchDataTarget final : public ICorDebugMutableDataTarget
     bool m_commonPopulated = false;
     std::vector<VMPTR_Assembly> m_assemblies;
     std::vector<VMPTR_Thread> m_threads;
-    std::vector<UINT_PTR> m_fieldTypes;
 
 public:
     PrefetchDataTarget(ICorDebugDataTarget* inner, RSLock* lock, UINT* counter, UINT* flushCounter)
@@ -46,7 +45,6 @@ public:
         m_commonPopulated = false;
         m_assemblies.clear();
         m_threads.clear();
-        m_fieldTypes.clear();
         m_epoch = *m_continueCounter;
         m_stackEpoch = *m_flushCounter;
     }
@@ -62,26 +60,14 @@ public:
         RSLockHolder holder(m_lock);
         m_stackCache.Clear();
         m_threads.clear();
-        m_fieldTypes.clear();
         m_stackEpoch = *m_flushCounter;
     }
-    bool ContainsFieldType(UINT_PTR type)
-    {
-        RSLockHolder holder(m_lock);
-        EnsureEpoch();
-        for (UINT_PTR existing : m_fieldTypes)
-            if (existing == type)
-                return true;
-        return false;
-    }
-    bool PopulateFieldType(UINT_PTR type, const PrefetchLineCache::Line* lines, UINT32 count, bool complete)
+    bool PopulateFullTypeInfo(const PrefetchLineCache::Line* lines, UINT32 count)
     {
         RSLockHolder holder(m_lock);
         EnsureEpoch();
         if (!m_stackCache.Add(lines, count))
             return false;
-        if (complete)
-            m_fieldTypes.push_back(type);
         return true;
     }
     bool ContainsAssembly(VMPTR_Assembly assembly)

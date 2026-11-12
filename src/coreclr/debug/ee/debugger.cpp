@@ -1252,6 +1252,26 @@ ULONG DebuggerMethodInfoTable::CheckDmiTable(void)
 //                        which complete via the pending-eval queue instead of a native breakpoint
 //                        trap. Caller-allocated because this function is NOTHROW.
 //
+#ifdef FEATURE_SINGLE_THREADED_DEBUGGER
+alignas(8) static BYTE s_initialFuncEvalBuffer[DebuggerFuncEvalBuffer::InitialCapacity]{};
+DebuggerFuncEvalBuffer::State g_debuggerFuncEvalBuffer{};
+static CONTEXT s_bufferedFuncEvalStoppedContext{};
+static Thread* s_bufferedFuncEvalStoppedThread = nullptr;
+static UINT32 ResetDrainedFuncEvalBuffer()
+{
+    auto& state = g_debuggerFuncEvalBuffer;
+    BYTE* buffer = reinterpret_cast<BYTE*>(static_cast<size_t>(state.address));
+    if (*reinterpret_cast<UINT32*>(buffer + state.processed) == 0)
+    {
+        *reinterpret_cast<UINT32*>(buffer) = 0;
+        state.processed = 0;
+        ++state.generation;
+    }
+    return state.generation;
+}
+#endif
+static DebuggerEval* s_bufferedFuncEvals = nullptr;
+
 DebuggerEval::DebuggerEval(CONTEXT * pContext, DebuggerIPCE_FuncEvalInfo * pEvalInfo, DebuggerEvalBreakpointInfoSegment* bpInfoSegmentRX)
 {
     WRAPPER_NO_CONTRACT;
@@ -1806,6 +1826,12 @@ HRESULT Debugger::Startup(void)
     HRESULT hr = S_OK;
 
     _ASSERTE(g_pEEInterface != NULL);
+
+#ifdef FEATURE_SINGLE_THREADED_DEBUGGER
+    g_debuggerFuncEvalBuffer.address = PTR_TO_CORDB_ADDRESS(s_initialFuncEvalBuffer);
+    g_debuggerFuncEvalBuffer.capacity = sizeof(s_initialFuncEvalBuffer);
+    g_debuggerFuncEvalBuffer.generation = 1;
+#endif
 
     DebuggerStartUp startup{this};
 
@@ -7690,8 +7716,11 @@ void Debugger::ProcessAnyPendingEvals(Thread *pThread)
     //
     DebuggerPendingFuncEval *pfe;
 
-    while (GetPendingEvals() != NULL && (pfe = GetPendingEvals()->GetPendingEval(pThread)) != NULL)
+    while (true)
     {
+        ProcessBufferedFuncEvals(pThread);
+        if (GetPendingEvals() == NULL || (pfe = GetPendingEvals()->GetPendingEval(pThread)) == NULL)
+            break;
         DebuggerEval *pDE = pfe->pDE;
 
         _ASSERTE(!pDE->m_evalUsesHijack);
@@ -9972,6 +10001,14 @@ void Debugger::FuncEvalComplete(Thread* pThread, DebuggerEval *pDE)
     ipce->FuncEvalComplete.resultAddr = (CORDB_ADDRESS)(pDE->m_result);
     ipce->FuncEvalComplete.vmAppDomain.SetRawPtr(pDomain);
     ipce->FuncEvalComplete.vmObjectHandle = pDE->m_vmObjectHandle;
+    ipce->FuncEvalComplete.setupHr = S_OK;
+    ipce->FuncEvalComplete.bufferGeneration = 0;
+#ifdef FEATURE_SINGLE_THREADED_DEBUGGER
+    if (pDE->m_bufferedEvalId != 0)
+    {
+        ipce->FuncEvalComplete.bufferGeneration = ResetDrainedFuncEvalBuffer();
+    }
+#endif
 
     LOG((LF_CORDB, LL_INFO1000, "D::FEC: TypeHandle is %p\n", pDE->m_resultType.AsPtr()));
 
@@ -10011,6 +10048,15 @@ bool Debugger::ResumeThreads(AppDomain* pAppDomain)
     CONTRACTL_END;
 
 #ifdef FEATURE_SINGLE_THREADED_DEBUGGER
+    Thread* thread = GetThreadNULLOk();
+    auto& bufferState = g_debuggerFuncEvalBuffer;
+    BYTE* buffer = reinterpret_cast<BYTE*>(static_cast<size_t>(bufferState.address));
+    bool pending = bufferState.address != 0 && bufferState.processed <= bufferState.capacity - sizeof(UINT32) &&
+        (bufferState.requestedCapacity != 0 || *reinterpret_cast<UINT32*>(buffer + bufferState.processed) != 0);
+    CONTEXT* context = pending && thread != nullptr ? GetManagedStoppedCtx(thread) : nullptr;
+    s_bufferedFuncEvalStoppedThread = context == nullptr ? nullptr : thread;
+    if (context != nullptr)
+        memcpy(&s_bufferedFuncEvalStoppedContext, context, sizeof(*context));
     m_stopped = false;
     m_trappingRuntimeThreads = FALSE;
     m_RSRequestedSync = FALSE;
@@ -10742,6 +10788,14 @@ bool Debugger::HandleIPCEvent(DebuggerIPCEvent * pEvent)
             TypeHandle::FromTAddr(reinterpret_cast<TADDR>(pEvent->PrefetchFieldMemory.vmTypeHandle.GetRawPtr())),
             pEvent->PrefetchFieldMemory.vmModule.GetRawPtr(), pEvent->PrefetchFieldMemory.typeDef);
         break;
+    case DB_IPCE_PREFETCH_OBJECT_FIELD_MEMORY:
+        {
+            // The reply reuses the receive buffer, so retain the request snapshot.
+            auto request = pEvent->PrefetchObjectFieldMemory;
+            PrefetchObjectFieldMemory(m_pRCThread, request.version, request.objectAddress,
+                request.objectSize, request.snapshotSize, request.snapshot);
+        }
+        break;
     case DB_IPCE_PREFETCH_EVAL_RESULT_MEMORY:
         PrefetchEvalResultMemory(m_pRCThread, pEvent->PrefetchEvalResultMemory.version,
             pEvent->PrefetchEvalResultMemory.flags, pEvent->PrefetchEvalResultMemory.vmObjectHandle.GetRawPtr(),
@@ -10751,6 +10805,15 @@ bool Debugger::HandleIPCEvent(DebuggerIPCEvent * pEvent)
         PrefetchHandleDereferenceMemory(m_pRCThread, pEvent->PrefetchHandleDereferenceMemory.version,
             pEvent->PrefetchHandleDereferenceMemory.flags,
             pEvent->PrefetchHandleDereferenceMemory.vmObjectHandle.GetRawPtr());
+        break;
+    case DB_IPCE_PREFETCH_FUNCTION_MEMORY:
+        PrefetchFunctionMemory(m_pRCThread, pEvent->PrefetchFunctionMemory.version,
+            pEvent->PrefetchFunctionMemory.flags, pEvent->PrefetchFunctionMemory.vmAssembly.GetRawPtr(),
+            pEvent->PrefetchFunctionMemory.methodDef);
+        break;
+    case DB_IPCE_PREFETCH_REFERENCE_DEREFERENCE_MEMORY:
+        PrefetchReferenceDereferenceMemory(m_pRCThread, pEvent->PrefetchReferenceDereferenceMemory.version,
+            pEvent->PrefetchReferenceDereferenceMemory.flags, pEvent->PrefetchReferenceDereferenceMemory.objectAddress);
         break;
 #endif
 
@@ -11103,7 +11166,11 @@ bool Debugger::HandleIPCEvent(DebuggerIPCEvent * pEvent)
             pEvent = m_pRCThread->GetIPCEventReceiveBuffer();
             InitIPCReply(pEvent,DB_IPCE_FUNC_EVAL_ABORT_RESULT);
 
-            pEvent->hr = FuncEvalAbort(pEvent->FuncEvalAbort.debuggerEvalKey.UnWrap());
+            DebuggerEval* eval = static_cast<UINT64>(pEvent->FuncEvalAbort.bufferedEvalId) != 0
+                ? FindBufferedFuncEval(pEvent->FuncEvalAbort.bufferedEvalId)
+                : pEvent->FuncEvalAbort.debuggerEvalKey.UnWrap();
+            pEvent->hr = eval == nullptr ? AbortBufferedFuncEvalRequest(pEvent->FuncEvalAbort.bufferedEvalId)
+                : FuncEvalAbort(eval);
 
             m_pRCThread->SendIPCReply();
         }
@@ -11120,13 +11187,18 @@ bool Debugger::HandleIPCEvent(DebuggerIPCEvent * pEvent)
 
             InitIPCReply(pEvent, DB_IPCE_FUNC_EVAL_RUDE_ABORT_RESULT);
 
-            pEvent->hr = FuncEvalRudeAbort(pEvent->FuncEvalRudeAbort.debuggerEvalKey.UnWrap());
+            DebuggerEval* eval = static_cast<UINT64>(pEvent->FuncEvalRudeAbort.bufferedEvalId) != 0
+                ? FindBufferedFuncEval(pEvent->FuncEvalRudeAbort.bufferedEvalId)
+                : pEvent->FuncEvalRudeAbort.debuggerEvalKey.UnWrap();
+            pEvent->hr = eval == nullptr ? AbortBufferedFuncEvalRequest(pEvent->FuncEvalRudeAbort.bufferedEvalId)
+                : FuncEvalRudeAbort(eval);
 
             m_pRCThread->SendIPCReply();
         }
         break;
 
     case DB_IPCE_FUNC_EVAL_CLEANUP:
+    {
 
         // This is a synchronous event (reply required)
 
@@ -11134,11 +11206,15 @@ bool Debugger::HandleIPCEvent(DebuggerIPCEvent * pEvent)
 
         InitIPCReply(pEvent,DB_IPCE_FUNC_EVAL_CLEANUP_RESULT);
 
-        pEvent->hr = FuncEvalCleanup(pEvent->FuncEvalCleanup.debuggerEvalKey.UnWrap());
+        DebuggerEval* eval = static_cast<UINT64>(pEvent->FuncEvalCleanup.bufferedEvalId) != 0
+            ? FindBufferedFuncEval(pEvent->FuncEvalCleanup.bufferedEvalId)
+            : pEvent->FuncEvalCleanup.debuggerEvalKey.UnWrap();
+        pEvent->hr = eval == nullptr ? E_INVALIDARG : FuncEvalCleanup(eval);
 
         m_pRCThread->SendIPCReply();
 
         break;
+    }
 
 #endif
 
@@ -14307,6 +14383,181 @@ void Debugger::SendCustomDebuggerNotification(Thread * pThread,
 //
 // FuncEvalSetup sets up a function evaluation for the given method on the given thread.
 //
+DebuggerEval* Debugger::FindBufferedFuncEval(UINT64 id)
+{
+    for (DebuggerEval* eval = s_bufferedFuncEvals; eval != nullptr; eval = eval->m_nextBufferedEval)
+        if (eval->m_bufferedEvalId == id)
+            return eval;
+    return nullptr;
+}
+
+HRESULT Debugger::AbortBufferedFuncEvalRequest(UINT64 id)
+{
+#ifdef FEATURE_SINGLE_THREADED_DEBUGGER
+    auto& state = g_debuggerFuncEvalBuffer;
+    BYTE* buffer = reinterpret_cast<BYTE*>(static_cast<size_t>(state.address));
+    UINT32 offset = state.processed;
+    while (id != 0 && state.address != 0 && offset <= state.capacity &&
+        state.capacity - offset >= sizeof(DebuggerFuncEvalBufferRequest))
+    {
+        auto request = reinterpret_cast<DebuggerFuncEvalBufferRequest*>(buffer + offset);
+        if (!DebuggerFuncEvalBuffer::IsValidRecord(request->bytes, sizeof(*request),
+            request->dataBytes, state.capacity - offset))
+            return E_INVALIDARG;
+        if (request->id == id && request->generation == state.generation)
+        {
+            request->flags |= DebuggerFuncEvalBuffer::AbortRequested;
+            return S_OK;
+        }
+        offset += request->bytes;
+    }
+#endif
+    return E_INVALIDARG;
+}
+
+void Debugger::ProcessBufferedFuncEvals(Thread* thread)
+{
+#ifdef FEATURE_SINGLE_THREADED_DEBUGGER
+    auto& state = g_debuggerFuncEvalBuffer;
+    if (state.address == 0)
+        return;
+    // The interpreter removes the breakpoint's filter context before dispatching pending evals.
+    // Preserve the stopped context across that transition, as eager setup did in DebuggerEval.
+    class StoppedContextHolder
+    {
+        Thread* m_thread;
+        bool m_installed;
+        CONTEXT m_context;
+    public:
+        explicit StoppedContextHolder(Thread* thread) : m_thread(thread),
+            m_installed(GetManagedStoppedCtx(thread) == nullptr && thread == s_bufferedFuncEvalStoppedThread)
+        {
+            if (m_installed)
+            {
+                memcpy(&m_context, &s_bufferedFuncEvalStoppedContext, sizeof(m_context));
+                g_pEEInterface->SetThreadFilterContext(thread, &m_context);
+            }
+        }
+        ~StoppedContextHolder()
+        {
+            if (m_installed)
+                g_pEEInterface->SetThreadFilterContext(m_thread, nullptr);
+        }
+    } stoppedContext(thread);
+    for (;;)
+    {
+        BYTE* buffer = reinterpret_cast<BYTE*>(static_cast<size_t>(state.address));
+        if (state.processed > state.capacity - sizeof(UINT32))
+        {
+            UnrecoverableError(E_INVALIDARG, 0, FILE_DEBUG, LINE_DEBUG, false);
+            return;
+        }
+        UINT32 bytes = *reinterpret_cast<UINT32*>(buffer + state.processed);
+        if (bytes == 0)
+        {
+            UINT32 capacity = state.requestedCapacity;
+            if (capacity == 0)
+                return;
+            state.requestedCapacity = 0;
+            HRESULT hr = E_INVALIDARG;
+            if (capacity > state.capacity && capacity <= DebuggerFuncEvalBuffer::MaximumCapacity)
+            {
+                BYTE* replacement = new (interopsafe, nothrow) BYTE[capacity];
+                hr = replacement == nullptr ? E_OUTOFMEMORY : S_OK;
+                if (replacement != nullptr)
+                {
+                    *reinterpret_cast<UINT32*>(replacement) = 0;
+                    if (buffer != s_initialFuncEvalBuffer)
+                        DeleteInteropSafe(buffer);
+                    state.address = PTR_TO_CORDB_ADDRESS(replacement);
+                    state.capacity = capacity;
+                    state.processed = 0;
+                    ++state.generation;
+                }
+            }
+            SENDIPCEVENT_BEGIN(this, thread);
+            DebuggerIPCEvent* event = GetIPCEventSendBuffer();
+            InitIPCEvent(event, DB_IPCE_FUNC_EVAL_BUFFER_READY, thread);
+            event->hr = hr;
+            event->FuncEvalBufferReady.address = state.address;
+            event->FuncEvalBufferReady.capacity = state.capacity;
+            event->FuncEvalBufferReady.generation = state.generation;
+            SendIPCEvent();
+            TrapAllRuntimeThreads();
+            SENDIPCEVENT_END;
+            continue;
+        }
+        UINT32 available = state.capacity - state.processed;
+        if (available < sizeof(DebuggerFuncEvalBufferRequest))
+        {
+            UnrecoverableError(E_INVALIDARG, 0, FILE_DEBUG, LINE_DEBUG, false);
+            return;
+        }
+        DebuggerFuncEvalBufferRequest request;
+        memcpy(&request, buffer + state.processed, sizeof(request));
+        if (!DebuggerFuncEvalBuffer::IsValidRecord(bytes, sizeof(request), request.dataBytes, available) ||
+            request.version != DebuggerFuncEvalBuffer::Version || request.generation != state.generation ||
+            (request.flags & ~DebuggerFuncEvalBuffer::AbortRequested) != 0 ||
+            request.id == 0 || FindBufferedFuncEval(request.id) != nullptr)
+        {
+            UnrecoverableError(E_INVALIDARG, 0, FILE_DEBUG, LINE_DEBUG, false);
+            return;
+        }
+        UINT64 expected = static_cast<UINT64>(request.info.genericArgsNodeCount) * sizeof(DebuggerIPCE_TypeArgData);
+        switch (request.info.funcEvalType)
+        {
+            case DB_IPCE_FET_NORMAL:
+            case DB_IPCE_FET_NEW_OBJECT:
+            case DB_IPCE_FET_NEW_OBJECT_NC:
+                expected += static_cast<UINT64>(request.info.argCount) * sizeof(DebuggerIPCE_FuncEvalArgData);
+                break;
+            case DB_IPCE_FET_NEW_STRING:
+                expected += request.info.stringSize;
+                break;
+            case DB_IPCE_FET_NEW_ARRAY:
+                expected += static_cast<UINT64>(request.info.arrayRank) * sizeof(SIZE_T);
+                break;
+            default:
+                expected = UINT64_MAX;
+                break;
+        }
+        HRESULT hr = expected == request.dataBytes && request.info.vmThreadToken.GetRawPtr() == thread
+            ? S_OK : E_INVALIDARG;
+        bool aborted = (request.flags & DebuggerFuncEvalBuffer::AbortRequested) != 0;
+        if (SUCCEEDED(hr) && aborted)
+            hr = CORDBG_S_FUNC_EVAL_ABORTED;
+        BYTE* arguments = nullptr;
+        DebuggerEval* eval = nullptr;
+        if (SUCCEEDED(hr) && !aborted)
+            hr = FuncEvalSetup(&request.info, &arguments, &eval);
+        if (SUCCEEDED(hr) && !aborted)
+        {
+            if (request.dataBytes != 0)
+                memcpy(arguments, buffer + state.processed + sizeof(request), request.dataBytes);
+            eval->m_bufferedEvalId = request.id;
+            eval->m_nextBufferedEval = s_bufferedFuncEvals;
+            s_bufferedFuncEvals = eval;
+        }
+        state.processed += bytes;
+        if (SUCCEEDED(hr) && !aborted)
+            return;
+
+        SENDIPCEVENT_BEGIN(this, thread);
+        DebuggerIPCEvent* event = GetIPCEventSendBuffer();
+        InitIPCEvent(event, DB_IPCE_FUNC_EVAL_COMPLETE, thread);
+        event->FuncEvalComplete.funcEvalKey = request.info.funcEvalKey;
+        event->FuncEvalComplete.successful = false;
+        event->FuncEvalComplete.aborted = aborted;
+        event->FuncEvalComplete.resultType.elementType = ELEMENT_TYPE_VOID;
+        event->FuncEvalComplete.setupHr = hr;
+        event->FuncEvalComplete.bufferGeneration = ResetDrainedFuncEvalBuffer();
+        SendIPCEvent();
+        TrapAllRuntimeThreads();
+        SENDIPCEVENT_END;
+    }
+#endif
+}
+
 HRESULT Debugger::FuncEvalSetup(DebuggerIPCE_FuncEvalInfo *pEvalInfo,
                                 BYTE **argDataArea,
                                 DebuggerEval **debuggerEvalKey)
@@ -14695,6 +14946,16 @@ HRESULT Debugger::FuncEvalCleanup(DebuggerEval *debuggerEvalKey)
     DebuggerEval *pDE = debuggerEvalKey;
 
     _ASSERTE(pDE->m_completed);
+
+    if (pDE->m_bufferedEvalId != 0)
+    {
+        DebuggerEval** link = &s_bufferedFuncEvals;
+        while (*link != nullptr && *link != pDE)
+            link = &(*link)->m_nextBufferedEval;
+        _ASSERTE(*link == pDE);
+        if (*link == pDE)
+            *link = pDE->m_nextBufferedEval;
+    }
 
     LOG((LF_CORDB, LL_INFO1000, "D::FEC: pDE:%p 0x%p, id=0x%x\n",
          pDE, pDE->m_thread, GetThreadIdHelper(pDE->m_thread)));

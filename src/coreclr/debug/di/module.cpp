@@ -1387,16 +1387,24 @@ HRESULT CordbModule::GetFunctionFromToken(mdMethodDef token,
     HRESULT hr = S_OK;
     EX_TRY
     {
-        RSLockHolder lockHolder(GetProcess()->GetProcessLock());
-
-        // Check token is valid.
-        if ((token == mdMethodDefNil) ||
-            (TypeFromToken(token) != mdtMethodDef) ||
-            (!GetMetaDataImporter()->IsValidToken(token)))
+        bool cached;
         {
-            ThrowHR(E_INVALIDARG);
+            RSLockHolder lockHolder(GetProcess()->GetProcessLock());
+
+            // Check token before sending it to the runtime.
+            if ((token == mdMethodDefNil) ||
+                (TypeFromToken(token) != mdtMethodDef) ||
+                (!GetMetaDataImporter()->IsValidToken(token)))
+            {
+                ThrowHR(E_INVALIDARG);
+            }
+            cached = LookupFunctionLatestVersion(token) != nullptr;
         }
 
+        if (!cached)
+            GetProcess()->PrefetchFunctionMemory(m_vmAssembly, token);
+
+        RSLockHolder lockHolder(GetProcess()->GetProcessLock());
         CordbFunction * pFunction = LookupOrCreateFunctionLatestVersion(token);
 
         *ppFunction = static_cast<ICorDebugFunction*> (pFunction);
